@@ -22,6 +22,7 @@ concat-speech = { path = "crates/concat-speech" }
 concat-effects = { path = "crates/concat-effects" }
 concat-text = { path = "crates/concat-text" }
 concat-vision = { path = "crates/concat-vision" }
+concat-ui = { path = "crates/concat-ui" }
 concat = { path = "crates/concat" }
 
 serde_json = "1"
@@ -87,6 +88,12 @@ incremental = true
 # on screen tells the difference; if something ever does, the shipping
 # build is `--profile app`.
 [profile.quick.package.concat]
+opt-level = 0
+codegen-units = 256
+
+# The Slint compiler's output now lives in its own crate, so it needs the same
+# treatment: it is the enormous module the paragraph above is about.
+[profile.quick.package.concat-ui]
 opt-level = 0
 codegen-units = 256
 

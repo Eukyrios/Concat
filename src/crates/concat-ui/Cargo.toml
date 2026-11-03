@@ -1,0 +1,32 @@
+[package]
+name = "concat-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Concat's Slint UI, compiled on its own so that an edit to the app's Rust never recompiles it."
+
+# Why this is a crate of its own: the Slint compiler turns the whole .slint
+# tree into one enormous Rust module, and that module is by far the slowest
+# thing to compile in the workspace. Held inside `concat` it was rebuilt on
+# every edit to any of `concat`'s Rust. Here it is rebuilt only when a .slint
+# file (or a font or image it embeds) changes.
+#
+# The .slint tree itself stays in ../concat/ui, where its relative asset paths
+# and the locales it sits beside already work; build.rs points there.
+
+# The same Slint the window runs on. Cargo unifies features across the
+# workspace, so the backend and renderer choices made per platform in
+# `concat`'s manifest apply to this copy too: it is one slint in the build.
+# The generated code decodes the embedded images through a feature the window's
+# backend turns on, so this crate is built inside the app, never alone.
+[dependencies]
+slint = { version = "1.18", default-features = false, features = [
+    "std",
+    "compat-1-2",
+    "renderer-software",
+] }
+
+[build-dependencies]
+slint-build = "1.18"
