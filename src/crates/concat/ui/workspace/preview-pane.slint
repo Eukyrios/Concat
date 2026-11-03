@@ -599,6 +599,9 @@ component StageOverlay inherits Rectangle {
     in property <float> stroke-width;
     in property <bool> stroke-erase;
     in property <bool> painting;
+    /// A colour's eyedropper is armed: a press picks the colour under it,
+    /// so the grips stand aside and the pointer is a crosshair.
+    in property <bool> picking;
 
     callback pressed(x: float, y: float, additive: bool);
     callback grip-pressed(id: string, grip: int, x: float, y: float);
@@ -624,7 +627,7 @@ component StageOverlay inherits Rectangle {
         property <bool> panning;
         property <bool> snap;
         mouse-cursor: self.panning ? MouseCursor.grabbing
-            : (root.painting || Eyedropper.active) ? MouseCursor.crosshair : MouseCursor.default;
+            : (root.painting || root.picking || Eyedropper.active) ? MouseCursor.crosshair : MouseCursor.default;
 
         pointer-event(event) => {
             // The right button opens the frame's menu and does nothing
@@ -704,7 +707,7 @@ component StageOverlay inherits Rectangle {
         y: 0;
         width: root.width;
         height: root.height;
-        if entry.selected: StageItem {
+        if entry.selected && !root.picking: StageItem {
             x: 0;
             y: 0;
             width: parent.width;
@@ -715,7 +718,7 @@ component StageOverlay inherits Rectangle {
             released => { root.released(); }
         }
         // Over the clip's own box, so a mask grip on its edge wins.
-        if entry.selected && entry.mask >= 0 && !root.painting: MaskItem {
+        if entry.selected && entry.mask >= 0 && !root.painting && !root.picking: MaskItem {
             x: 0;
             y: 0;
             width: parent.width;
@@ -772,6 +775,8 @@ export component PreviewPane inherits Rectangle {
     in property <float> stroke-width;
     in property <bool> stroke-erase;
     in property <bool> painting;
+    /// A colour's eyedropper is armed; see StageOverlay.
+    in property <bool> picking;
     /// The snap lines while one of them is being moved.
     in property <[StageGuideData]> stage-guides;
 
@@ -1090,6 +1095,7 @@ export component PreviewPane inherits Rectangle {
                 stroke-width: root.stroke-width;
                 stroke-erase: root.stroke-erase;
                 painting: root.painting;
+                picking: root.picking;
                 pressed(x, y, additive) => {
                     if (Eyedropper.active) {
                         Eyedropper.frame-picked(x, y);

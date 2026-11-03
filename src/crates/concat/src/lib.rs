@@ -190,6 +190,10 @@ pub(crate) fn close_window(
 }
 
 /// [`run_with_project`], or [`smoke`] when `smoke` is set.
+/// The frames the caches keep between them once the app has gone quiet:
+/// a few seconds of scrubbing around where the monitor is, at its size.
+const IDLE_FRAMES: usize = 96 * 1024 * 1024;
+
 fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::PlatformError> {
     // What Import and a finished export reach on an iPhone. Android's own
     // crate installs its; iOS runs this crate's binary, so it is here.
@@ -363,17 +367,33 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
             }
         }
     }
-    // A picked playhead colour is remembered as its hex; none remembered,
-    // or one that will not parse, is the palette's own.
-    if let Some(colour) = studio
-        .prefs
-        .playhead
-        .as_deref()
-        .and_then(format::parse_colour)
+    // The playhead is remembered the accent's way: an accent's name, worn
+    // as each palette has it, or a picked colour's hex. None remembered,
+    // or a name no longer on the list, is Lime, the palette's own.
     {
         let theme = app.global::<Theme>();
-        theme.set_playhead_custom(colour);
-        theme.set_playhead_is_custom(true);
+        let names = theme.get_accent_names();
+        let count = slint::Model::row_count(&names);
+        let remembered = studio.prefs.playhead.as_deref().map(str::trim);
+        match remembered
+            .filter(|text| text.starts_with('#'))
+            .and_then(format::parse_colour)
+        {
+            Some(colour) => {
+                theme.set_playhead_custom(colour);
+                theme.set_playhead_choice(count as i32);
+            }
+            None => {
+                let index = remembered
+                    .and_then(|wanted| {
+                        slint::Model::iter(&names).position(|name| {
+                            prefs::Preferences::accent_id(&name) == wanted.to_lowercase()
+                        })
+                    })
+                    .unwrap_or(0);
+                theme.set_playhead_choice(index as i32);
+            }
+        }
     }
     // The interface scale: the row on Settings > Appearance reads the index
     // off the Theme global, and the window was already made at the scale the
@@ -432,6 +452,7 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
         editor.set_visual_wheels(ModelRc::from(models.visual_wheels.clone()));
         editor.set_visual_curves(ModelRc::from(models.visual_curves.clone()));
         editor.set_visual_colours(ModelRc::from(models.visual_colours.clone()));
+        editor.set_visual_choices(ModelRc::from(models.visual_choices.clone()));
         app.global::<Keyframes>()
             .set_rows(ModelRc::from(models.key_rows.clone()));
         app.global::<KeyEditor>()
@@ -444,6 +465,7 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
             .set_views(ModelRc::from(models.library_views.clone()));
         editor.set_menu_items(ModelRc::from(models.menu.clone()));
         app.set_caption_models(ModelRc::from(models.caption_models.clone()));
+        app.set_caption_languages(ModelRc::from(models.caption_languages.clone()));
         app.set_speech_models(ModelRc::from(models.speech_models.clone()));
         app.set_speech_model_details(ModelRc::from(models.speech_model_details.clone()));
         app.set_speech_voices(ModelRc::from(models.speakers.clone()));
@@ -1167,6 +1189,9 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     editor.on_clip_volume(on_lanes!(|state, id: SharedString, gain: f32| {
         state.clip_volume(&id, gain);
     }));
+    editor.on_clip_fade(on_lanes!(|state, id: SharedString, out: bool, seconds: f32| {
+        state.clip_fade(&id, out, seconds);
+    }));
     editor.on_save_frame(on_window!(|state| {
         state.save_frame_as();
     }));
@@ -1273,9 +1298,6 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
         }));
         backdrop.on_set_still(on_lanes!(|state, clip: bool, row: i32| {
             state.backdrop_set_still(clip, row);
-        }));
-        backdrop.on_apply_to_all(on_lanes!(|state| {
-            state.backdrop_apply_to_all();
         }));
         backdrop.on_frame(on_lanes!(|state, fill: bool| {
             state.frame_selected(fill);
@@ -1414,6 +1436,12 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
             state.chain_set_colour(index, key.as_str(), value);
         }
     ));
+    editor.on_chain_pick_colour(on_window!(|state, index: i32, key: SharedString| {
+        state.chain_pick_colour(index, key.as_str());
+    }));
+    editor.on_chain_auto_colour(on_window!(|state, index: i32, key: SharedString| {
+        state.chain_auto_colour(index, key.as_str());
+    }));
 
     editor.on_adjust_set(on_lanes!(|state, key: SharedString, value: f32| {
         state.adjust_set(key.as_str(), value);
@@ -1805,6 +1833,13 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
             let Some(chord) = chord else {
                 return;
             };
+            // Escape puts an armed eyedropper down before it means anything
+            // else.
+            if chord == "escape" && shell.studio.borrow_mut().cancel_colour_pick() {
+                handled = true;
+                shell.studio.borrow().publish(&app, &shell.models);
+                return;
+            }
             if on_start {
                 // The launch screen has no project to act on. Capture
                 // is handled above, so its keys work there too.
@@ -2020,28 +2055,38 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
             });
         }
     });
-    // The playhead's colour is the same shape of thing as the custom accent:
-    // a colour on the Theme global, remembered as its hex, behind a flag
-    // that says it is on. A reset clears the flag and forgets the hex, so
-    // the palette's own comes back and the file no longer names one.
-    app.on_settings_playhead_changed({
-        move |colour| {
+    // The playhead's colour is the same shape of thing as the accent: one
+    // int on the Theme global, remembered as the accent's name it points
+    // at, or as the hex of a colour picked by hand. Lime is the palette's
+    // own, and the file then names none.
+    app.on_settings_playhead_chosen({
+        move |index| {
             Shell::with(|shell, app| {
                 let theme = app.global::<Theme>();
-                theme.set_playhead_custom(colour);
-                theme.set_playhead_is_custom(true);
+                let names = theme.get_accent_names();
+                let Some(name) = usize::try_from(index)
+                    .ok()
+                    .and_then(|row| slint::Model::row_data(&names, row))
+                else {
+                    return;
+                };
+                theme.set_playhead_choice(index);
                 let mut studio = shell.studio.borrow_mut();
-                studio.prefs.playhead = Some(format::hex_of(colour));
+                studio.prefs.playhead =
+                    (index > 0).then(|| prefs::Preferences::accent_id(&name));
                 studio.prefs.save(&studio.host.dirs);
             });
         }
     });
-    app.on_settings_playhead_reset({
-        move || {
+    app.on_settings_playhead_changed({
+        move |colour| {
             Shell::with(|shell, app| {
-                app.global::<Theme>().set_playhead_is_custom(false);
+                let theme = app.global::<Theme>();
+                let count = slint::Model::row_count(&theme.get_accent_names());
+                theme.set_playhead_custom(colour);
+                theme.set_playhead_choice(count as i32);
                 let mut studio = shell.studio.borrow_mut();
-                studio.prefs.playhead = None;
+                studio.prefs.playhead = Some(format::hex_of(colour));
                 studio.prefs.save(&studio.host.dirs);
             });
         }
@@ -2286,6 +2331,9 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     }));
     app.on_captions_model_changed(on_window!(|state, index: i32| {
         state.handle(Msg::Captions(CaptionsMsg::ModelChanged(index)));
+    }));
+    app.on_captions_language_changed(on_window!(|state, index: i32| {
+        state.handle(Msg::Captions(CaptionsMsg::LanguageChanged(index)));
     }));
     app.on_captions_placement_changed(on_window!(|state, index: i32| {
         state.handle(Msg::Captions(CaptionsMsg::PlacementChanged(index)));
@@ -2671,17 +2719,38 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     // looked at every five: each holds buffers of its own, and the playhead
     // leaves files behind. One reopens on its next frame. Held here, for
     // the life of the loop.
+    //
+    // And once nothing has asked for a frame since the last look, the app
+    // has gone quiet: the frame caches go down to a working set around
+    // where the monitor is, the GPU's copies of them to a quarter, and the
+    // memory all of that freed goes back to the system. Open on a 4K
+    // project, idle, it held 590 MB, a hundred of it freed and kept by the
+    // allocator; the caches fill again as soon as frames are asked for.
     let reader_sweep = slint::Timer::default();
+    let quiet = std::cell::Cell::new((u64::MAX, false));
     reader_sweep.start(
         slint::TimerMode::Repeated,
         std::time::Duration::from_secs(5),
-        || {
-            let closed = concat_host::scheduler()
-                .pool()
-                .close_idle(std::time::Duration::from_secs(10));
+        move || {
+            let pool = concat_host::scheduler().pool();
+            let closed = pool.close_idle(std::time::Duration::from_secs(10));
             if closed > 0 {
                 log::debug!("memory: closed {closed} idle decoder(s)");
             }
+            let asked = pool.asked();
+            let (seen, trimmed) = quiet.get();
+            if asked != seen {
+                quiet.set((asked, false));
+                return;
+            }
+            if trimmed {
+                return;
+            }
+            quiet.set((asked, true));
+            pool.trim(IDLE_FRAMES);
+            Shell::with(|shell, _| shell.studio.borrow().host.monitor.shrink());
+            concat_host::memory::release_freed();
+            log::debug!("memory: quiet, caches trimmed and freed memory returned");
         },
     );
 
@@ -2969,8 +3038,16 @@ mod tests {
     #[test]
     fn a_failed_save_keeps_the_real_session_and_its_edit() {
         let scratch = Scratch::new("session");
-        let info = projects::create(&scratch.location(), "Closing", 1920, 1080, 30, 1, [0, 0, 0, 255])
-            .expect("creates the project");
+        let info = projects::create(
+            &scratch.location(),
+            "Closing",
+            1920,
+            1080,
+            30,
+            1,
+            [0, 0, 0, 255],
+        )
+        .expect("creates the project");
         let manifest = projects::manifest_path(Path::new(&info.path));
 
         // A real session, saved once; then an edit that lives in memory
@@ -3047,8 +3124,16 @@ mod tests {
     #[test]
     fn a_delayed_autosave_cannot_replace_the_close_snapshot() {
         let scratch = Scratch::new("ordered-close");
-        let info = projects::create(&scratch.location(), "Ordered", 1920, 1080, 30, 1, [0, 0, 0, 255])
-            .expect("creates the project");
+        let info = projects::create(
+            &scratch.location(),
+            "Ordered",
+            1920,
+            1080,
+            30,
+            1,
+            [0, 0, 0, 255],
+        )
+        .expect("creates the project");
         let mut session = Session::open_info(&info).expect("opens the session");
         let (old_path, old_document) = session.prepare_save(None);
         let old_ticket = projects::ticket();

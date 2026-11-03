@@ -64,6 +64,8 @@ export enum Glyph {
     mask-star,
     chevron-right,
     sparkle,
+    /// the eyedropper: a colour taken off the picture
+    pipette,
     eye,
     lock,
     frame,
@@ -158,7 +160,6 @@ export enum Glyph {
     book,
     circle-play,
     bug,
-    pipette,
     arrow-up-right,
     /// two marks of other people's, filled, from Simple Icons (CC0): the
     /// repository's host and the community's chat
@@ -282,13 +283,6 @@ export component Icon inherits Rectangle {
         size: root.size; tint: root.tint; weight: root.weight;
         commands: "M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"
             + " M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z";
-    }
-
-    // lucide/pipette
-    if root.glyph == Glyph.pipette: Stroked {
-        size: root.size; tint: root.tint; weight: root.weight;
-        commands: "M2 22l1 -1h3l9 -9 M3 21v-3l9 -9"
-            + " M15 6l3.4 -3.4a2.1 2.1 0 1 1 3 3L18 9l.4 .4a2.1 2.1 0 1 1 -3 3l-3.8 -3.8a2.1 2.1 0 1 1 3 -3l.4 .4z";
     }
 
     // lucide/bug
@@ -461,6 +455,15 @@ export component Icon inherits Rectangle {
     if root.glyph == Glyph.sliders: Stroked {
         size: root.size; tint: root.tint; weight: root.weight;
         commands: "M21 4H14 M10 4H3 M21 12H12 M8 12H3 M21 20H16 M12 20H3 M14 2V6 M8 10V14 M16 18V22";
+    }
+
+    // lucide/pipette
+    if root.glyph == Glyph.pipette: Stroked {
+        size: root.size; tint: root.tint; weight: root.weight;
+        commands: "m12 9-8.414 8.414A2 2 0 0 0 3 18.828v1.344a2 2 0 0 1-.586 1.414"
+            + "A2 2 0 0 1 3.828 21h1.344a2 2 0 0 0 1.414-.586L15 12"
+            + " M18 9 l.4.4a1 1 0 1 1-3 3l-3.8-3.8a1 1 0 1 1 3-3l.4.4 3.4-3.4a1 1 0 1 1 3 3z"
+            + " M2 22 l.414-.414";
     }
 
     // lucide/sparkles

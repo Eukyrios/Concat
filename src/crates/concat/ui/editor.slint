@@ -3,7 +3,8 @@
 
 import { EffectData } from "demo/effects-panel.slint";
 import {
-    AppliedEntryData, AppliedParamData, CatalogueEntryData, ColourKnobData, TransitionChoiceData,
+    AppliedEntryData, AppliedParamData, CatalogueEntryData, ChainChoiceData, ColourKnobData,
+    TransitionChoiceData,
 } from "inspector/clip-inspector.slint";
 import {
     CurveData, CurveGroupData, WheelData, WheelGroupData,
@@ -227,6 +228,14 @@ export global Editor {
     /// packed into the knob's number, see `Studio::chain_set_colour`.
     in-out property <[ColourKnobData]> visual-colours;
     callback chain-set-colour(index: int, key: string, value: color);
+    /// A colour knob's eyedropper pressed - armed, or put down - and its
+    /// way back to the colour its package finds by itself. While one is
+    /// armed the monitor takes the next press as the pick.
+    callback chain-pick-colour(index: int, key: string);
+    callback chain-auto-colour(index: int, key: string);
+    in-out property <bool> picking-colour;
+    /// The picture chain's choices, a row of segments each.
+    in-out property <[ChainChoiceData]> visual-choices;
     callback curve-point(entry: int, key: string, point: int, x: float, y: float);
     callback curve-remove(entry: int, key: string, point: int);
 
@@ -471,6 +480,9 @@ export global Editor {
     /// A clip's volume line on the lanes dragged to `gain`, linear, 1
     /// being unity: written to the clip as the inspector's knob would be.
     callback clip-volume(id: string, gain: float);
+    /// A clip's fade knob on the lanes dragged: its fade in, or with `out`
+    /// its fade out, to `seconds`.
+    callback clip-fade(id: string, out: bool, seconds: float);
     callback clip-dragged(seconds: float, pixels: length);
     callback clip-released();
     in-out property <[MenuItemData]> menu-items;
