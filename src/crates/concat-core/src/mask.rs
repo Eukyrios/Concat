@@ -34,17 +34,27 @@ pub enum MaskShape {
     Heart,
     /// A five-pointed star, point up.
     Star,
+    /// An isosceles triangle filling the box, point up.
+    Triangle,
+    /// A box leaning right, its slanted sides cutting a fifth of the width
+    /// off each end.
+    Parallelogram,
+    /// A box narrower at the top, a fifth of the width off each top corner.
+    Trapezoid,
 }
 
 impl MaskShape {
     /// Every shape, in the order a picker lists them.
-    pub const ALL: [MaskShape; 6] = [
+    pub const ALL: [MaskShape; 9] = [
         MaskShape::Linear,
         MaskShape::Mirror,
         MaskShape::Circle,
         MaskShape::Rectangle,
         MaskShape::Heart,
         MaskShape::Star,
+        MaskShape::Triangle,
+        MaskShape::Parallelogram,
+        MaskShape::Trapezoid,
     ];
 
     /// The name a document writes. Stable for ever.
@@ -56,6 +66,9 @@ impl MaskShape {
             MaskShape::Rectangle => "rectangle",
             MaskShape::Heart => "heart",
             MaskShape::Star => "star",
+            MaskShape::Triangle => "triangle",
+            MaskShape::Parallelogram => "parallelogram",
+            MaskShape::Trapezoid => "trapezoid",
         }
     }
 
@@ -76,6 +89,9 @@ impl MaskShape {
             MaskShape::Rectangle => 4.0,
             MaskShape::Heart => 5.0,
             MaskShape::Star => 6.0,
+            MaskShape::Triangle => 7.0,
+            MaskShape::Parallelogram => 8.0,
+            MaskShape::Trapezoid => 9.0,
         }
     }
 
@@ -237,8 +253,42 @@ pub fn distance(code: f32, p: [f32; 2], half: [f32; 2], radius: f32) -> f32 {
             heart(q) * (hx / SIDE).min(hy / MID)
         }
         6 => star(p[0] / hx, -p[1] / hy) * hx.min(hy),
+        7 => polygon(p, &[[0.0, -hy], [hx, hy], [-hx, hy]]),
+        8 => {
+            // A fifth of the full width is cut off each end.
+            let lean = 0.4 * hx;
+            polygon(
+                p,
+                &[[-hx + lean, -hy], [hx, -hy], [hx - lean, hy], [-hx, hy]],
+            )
+        }
+        9 => {
+            let inset = 0.4 * hx;
+            polygon(
+                p,
+                &[[-hx + inset, -hy], [hx - inset, -hy], [hx, hy], [-hx, hy]],
+            )
+        }
         _ => -1.0,
     }
+}
+
+/// A convex polygon, its corners running clockwise on screen (y down): the
+/// furthest any of its edges' planes is from `p`, negative inside. Exact
+/// inside and along the edges, which is where a mask's edge is; past a
+/// corner it falls short of the true distance, which only shapes how a
+/// feather turns that corner.
+fn polygon(p: [f32; 2], corners: &[[f32; 2]]) -> f32 {
+    let mut worst = f32::NEG_INFINITY;
+    for (index, a) in corners.iter().enumerate() {
+        let b = corners[(index + 1) % corners.len()];
+        let edge = [b[0] - a[0], b[1] - a[1]];
+        let long = length(edge).max(1e-9);
+        // Outward, for corners that run clockwise with y down.
+        let normal = [edge[1] / long, -edge[0] / long];
+        worst = worst.max((p[0] - a[0]) * normal[0] + (p[1] - a[1]) * normal[1]);
+    }
+    worst
 }
 
 /// WGSL's `smoothstep`, for `edge0 < edge1`.

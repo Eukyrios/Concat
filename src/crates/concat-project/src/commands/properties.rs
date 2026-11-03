@@ -44,6 +44,9 @@ pub(super) fn apply(
                 // a `muted: false` that means the same as nothing.
                 applied |= assign(&mut clip.muted, muted.then_some(true));
             }
+            if let Some(group) = patch.group {
+                applied |= assign(&mut clip.group, group);
+            }
             if let Some(flip) = patch.flip_h {
                 applied |= assign(&mut clip.flip_h, flip);
             }
@@ -80,6 +83,11 @@ pub(super) fn apply(
                     applied |= assign(&mut clip.name, first_line(&style.content));
                 }
                 applied |= assign(&mut clip.text, text);
+            }
+            if let Some(shape) = patch.shape
+                && clip.shape.is_some()
+            {
+                applied |= assign(&mut clip.shape, Some(shape.tidy()));
             }
             if let Some(stream) = patch.audio_stream {
                 applied |= assign(&mut clip.audio_stream, stream);

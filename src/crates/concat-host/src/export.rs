@@ -88,6 +88,81 @@ pub fn request(session: &Session, spec: &ExportSpec, titles: Vec<ExportClip>) ->
     }
 }
 
+/// The project with only the clips `ids` name, moved so the earliest starts
+/// at zero, and where that earliest was on the real timeline. Every lane is
+/// shown and sounding, so a selection on a hidden or muted lane still
+/// renders. `None` when none of `ids` is on the timeline.
+pub fn selection_project(
+    project: &concat_project::model::Project,
+    ids: &[String],
+) -> Option<(concat_project::model::Project, f64)> {
+    let mut alone = project.clone();
+    let timeline = alone.active_mut();
+    let chosen: Vec<_> = timeline
+        .clips
+        .iter()
+        .filter(|clip| ids.contains(&clip.id))
+        .cloned()
+        .collect();
+    if chosen.is_empty() {
+        return None;
+    }
+    let start = chosen
+        .iter()
+        .map(|clip| clip.start)
+        .fold(f64::INFINITY, f64::min);
+    timeline.clips = chosen
+        .into_iter()
+        .map(|clip| {
+            let mut clip = (*clip).clone();
+            clip.start -= start;
+            std::sync::Arc::new(clip)
+        })
+        .collect();
+    for track in &mut timeline.tracks {
+        track.visible = true;
+        track.muted = false;
+    }
+    Some((alone, start))
+}
+
+/// [`request`] for a [`selection_project`]: its clips flattened, with the
+/// timeline's settings and the real timeline's clock kept for effects.
+pub fn request_for_selection(
+    selection: &concat_project::model::Project,
+    offset: f64,
+    session: &Session,
+    spec: &ExportSpec,
+    titles: Vec<ExportClip>,
+) -> ExportRequest {
+    let settings = session.settings();
+    let mut clips = concat_export::flatten::flatten_timeline_in(
+        selection,
+        None,
+        Some(std::path::Path::new(session.path())),
+    );
+    clips.extend(titles);
+    ExportRequest {
+        output: spec.output.clone(),
+        width: settings.width,
+        height: settings.height,
+        rate_num: settings.rate_num,
+        rate_den: settings.rate_den,
+        crf: spec.crf,
+        preset: spec.preset.clone(),
+        codec: spec.codec,
+        ten_bit: spec.ten_bit,
+        rate_mode: spec.rate_mode,
+        bitrate_kbps: spec.bitrate_kbps,
+        color_range: spec.color_range,
+        color_space: session.video().color_space,
+        hdr: spec.hdr,
+        effect_time_offset: offset,
+        canvas: session.video().canvas,
+        clips,
+    }
+}
+
 /// Renders `request` and returns the path written, reporting through
 /// `progress` and stopping at the next frame once `cancel` is set. Blocks for
 /// the whole render: run it on its own thread. Draws on a device of its

@@ -2118,6 +2118,14 @@ pub struct ShapeStyle {
     pub stroke: String,
     /// The outline's thickness, and a line's or an arrow's own.
     pub stroke_width: f64,
+    /// How far the compositor will pull the painted figure along each axis
+    /// (the clip's stretch). The figure is painted as it was, and pulled
+    /// afterwards, so an outline painted with an even width would come out
+    /// thicker where the figure is squeezed and thinner where it is
+    /// stretched. Painting the outline pre-compensated for this makes it the
+    /// same thickness all round once the pull is applied. `1.0` and `1.0`
+    /// for no pull.
+    pub stretch: (f64, f64),
 }
 
 /// Paints `style` centred on a `width` × `height` transparent canvas and
@@ -2292,13 +2300,49 @@ fn paint_shape(style: &ShapeStyle, width: u32, height: u32) -> Result<(Pixmap, B
         if rule > 0.0
             && let Some(edge) = edge
         {
-            canvas.stroke_path(
-                &path,
-                &stroke(edge),
-                &line_style(rule),
-                Transform::identity(),
-                None,
-            );
+            // The compositor pulls this picture by `stretch` afterwards. So
+            // the outline is stroked on the figure as it will look once
+            // pulled, with an even width, and then drawn back through the
+            // inverse pull: the pull then restores the even width.
+            let kx = (style.stretch.0 as f32).clamp(0.01, 100.0);
+            let ky = (style.stretch.1 as f32).clamp(0.01, 100.0);
+            let pulled = if (kx - 1.0).abs() > 1e-4 || (ky - 1.0).abs() > 1e-4 {
+                path.clone().transform(Transform::from_row(
+                        kx,
+                        0.0,
+                        0.0,
+                        ky,
+                        cx * (1.0 - kx),
+                        cy * (1.0 - ky),
+                    ))
+                    .map(|bent| {
+                        (
+                            bent,
+                            Transform::from_row(
+                                1.0 / kx,
+                                0.0,
+                                0.0,
+                                1.0 / ky,
+                                cx * (1.0 - 1.0 / kx),
+                                cy * (1.0 - 1.0 / ky),
+                            ),
+                        )
+                    })
+            } else {
+                None
+            };
+            match pulled {
+                Some((bent, back)) => {
+                    canvas.stroke_path(&bent, &stroke(edge), &line_style(rule), back, None)
+                }
+                None => canvas.stroke_path(
+                    &path,
+                    &stroke(edge),
+                    &line_style(rule),
+                    Transform::identity(),
+                    None,
+                ),
+            }
         }
     } else if rule > 0.0
         && let Some(ink) = edge.or(fill)
@@ -3239,6 +3283,7 @@ mod tests {
             fill: "#ff0000".to_owned(),
             stroke: String::new(),
             stroke_width: 0.0,
+            stretch: (1.0, 1.0),
         };
         let frame = render_shape_frame(&square, 400, 200).expect("paints");
         assert_eq!((frame.block_width, frame.block_height), (100, 100));
@@ -3256,6 +3301,7 @@ mod tests {
             fill: "#00ff00".to_owned(),
             stroke: String::new(),
             stroke_width: 0.05,
+            stretch: (1.0, 1.0),
         };
         let frame = render_shape_frame(&line, 400, 200).expect("paints");
         assert_eq!((frame.block_width, frame.block_height), (100, 10));
@@ -3270,6 +3316,38 @@ mod tests {
 
         let png = render_shape(&square, 64, 64).expect("encodes");
         assert!(png.png.starts_with(b"\x89PNG"));
+    }
+
+    /// A shape's outline is painted for the pull the compositor will give the
+    /// picture, so it is the same thickness on every side afterwards.
+    #[test]
+    fn an_outline_stays_even_when_the_figure_is_pulled() {
+        let outline = ShapeStyle {
+            figure: Figure::Square,
+            size: 0.5,
+            fill: String::new(),
+            stroke: "#ff0000".to_owned(),
+            stroke_width: 0.04,
+            stretch: (2.0, 0.5),
+        };
+        // 400 by 200: the outline is 8 pixels once pulled, so 8 / 2 wide on
+        // the sides and 8 / 0.5 deep on the top and bottom before it.
+        let frame = render_shape_frame(&outline, 400, 200).expect("paints");
+        let alpha = |x: u32, y: u32| frame.rgba[((y * 400 + x) * 4 + 3) as usize];
+        let side = (0..200).filter(|x| alpha(*x, 100) > 127).count() as i32;
+        let top = (0..100).filter(|y| alpha(200, *y) > 127).count() as i32;
+        assert!((side - 4).abs() <= 1, "the side is {side} pixels, not 4");
+        assert!((top - 16).abs() <= 1, "the top is {top} pixels, not 16");
+        // Unpulled stays as it was: even at 8.
+        let plain = ShapeStyle {
+            stretch: (1.0, 1.0),
+            ..outline
+        };
+        let frame = render_shape_frame(&plain, 400, 200).expect("paints");
+        let alpha = |x: u32, y: u32| frame.rgba[((y * 400 + x) * 4 + 3) as usize];
+        let side = (0..200).filter(|x| alpha(*x, 100) > 127).count() as i32;
+        let top = (0..100).filter(|y| alpha(200, *y) > 127).count() as i32;
+        assert!((side - 8).abs() <= 1 && (top - 8).abs() <= 1, "{side} {top}");
     }
 
     // ── colour emoji: https://github.com/jub0t/Concat/issues/276 ──

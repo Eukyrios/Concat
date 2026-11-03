@@ -58,7 +58,9 @@ pub struct TitleClip {
 #[derive(Clone, Copy)]
 enum Painting<'a> {
     Title(&'a TextStyle),
-    Shape(&'a ShapeStyle),
+    /// The figure, and the pull (the clip's stretch) the compositor will
+    /// apply to it, which the painter compensates the outline for.
+    Shape(&'a ShapeStyle, f64, f64),
 }
 
 /// What one render left behind.
@@ -240,7 +242,7 @@ impl Titles {
                 }
                 ModelClipKind::Shape => {
                     shape = clip.shape.clone().unwrap_or_default();
-                    Painting::Shape(&shape)
+                    Painting::Shape(&shape, clip.stretch_x, clip.stretch_y)
                 }
                 _ => continue,
             };
@@ -296,11 +298,11 @@ impl Titles {
                     // the rectangle that was wanted.
                     stretch_x: match painting {
                         Painting::Title(_) => 1.0,
-                        Painting::Shape(_) => clip.stretch_x,
+                        Painting::Shape(..) => clip.stretch_x,
                     },
                     stretch_y: match painting {
                         Painting::Title(_) => 1.0,
-                        Painting::Shape(_) => clip.stretch_y,
+                        Painting::Shape(..) => clip.stretch_y,
                     },
                     // The style's own opacity multiplies the clip's: a
                     // half-transparent title fades to half, not to solid.
@@ -308,7 +310,7 @@ impl Titles {
                         Painting::Title(text) => {
                             (export_base(clip, KeyProperty::Opacity) * text.opacity).clamp(0.0, 1.0)
                         }
-                        Painting::Shape(_) => {
+                        Painting::Shape(..) => {
                             export_base(clip, KeyProperty::Opacity).clamp(0.0, 1.0)
                         }
                     },
@@ -324,7 +326,7 @@ impl Titles {
                     // A shape has no words to reveal one at a time.
                     reveal_map: match painting {
                         Painting::Title(_) => Some(Arc::clone(&art.reveal)),
-                        Painting::Shape(_) => None,
+                        Painting::Shape(..) => None,
                     },
                     ..ExportClip::blank(ClipKind::Image, clip.start, clip.duration, index)
                 },
@@ -358,8 +360,8 @@ impl Titles {
                 concat_text::render_frame(fonts, &title, width, height)
                     .map_err(|error| error.to_string())?
             }
-            Painting::Shape(style) => {
-                concat_text::render_shape_frame(&shape_style(style), width, height)
+            Painting::Shape(style, kx, ky) => {
+                concat_text::render_shape_frame(&shape_style(style, kx, ky), width, height)
                     .map_err(|error| error.to_string())?
             }
         };
@@ -421,8 +423,10 @@ impl Titles {
                 concat_text::render(fonts, &title, width, height)
                     .map_err(|error| error.to_string())?
             }
-            Painting::Shape(style) => concat_text::render_shape(&shape_style(style), width, height)
-                .map_err(|error| error.to_string())?,
+            Painting::Shape(style, kx, ky) => {
+                concat_text::render_shape(&shape_style(style, kx, ky), width, height)
+                    .map_err(|error| error.to_string())?
+            }
         };
         std::fs::create_dir_all(&self.dir).map_err(|error| error.to_string())?;
         std::fs::write(&png, &rendered.png).map_err(|error| error.to_string())?;
@@ -490,9 +494,13 @@ fn key_of(project: &Project, painting: Painting<'_>, width: u32, height: u32) ->
         Painting::Title(style) => {
             bytes.extend_from_slice(serde_json::to_string(style).unwrap_or_default().as_bytes());
         }
-        Painting::Shape(style) => {
+        Painting::Shape(style, kx, ky) => {
             bytes.extend_from_slice(b"shape:");
             bytes.extend_from_slice(serde_json::to_string(style).unwrap_or_default().as_bytes());
+            // The outline is painted for the pull, so the pull is part of
+            // what the picture is.
+            bytes.extend_from_slice(&kx.to_le_bytes());
+            bytes.extend_from_slice(&ky.to_le_bytes());
         }
     }
     bytes.push(0);
@@ -649,7 +657,7 @@ fn title_style(style: &TextStyle) -> TitleStyle {
 }
 
 /// The document's shape, in the painter's terms.
-fn shape_style(style: &ShapeStyle) -> concat_text::ShapeStyle {
+fn shape_style(style: &ShapeStyle, stretch_x: f64, stretch_y: f64) -> concat_text::ShapeStyle {
     concat_text::ShapeStyle {
         figure: match style.kind {
             ShapeKind::Square => Figure::Square,
@@ -664,6 +672,7 @@ fn shape_style(style: &ShapeStyle) -> concat_text::ShapeStyle {
         fill: style.fill.clone(),
         stroke: style.stroke.clone(),
         stroke_width: style.stroke_width,
+        stretch: (stretch_x, stretch_y),
     }
 }
 

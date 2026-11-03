@@ -322,9 +322,19 @@ pub(super) fn apply(
                         .as_deref()
                         .and_then(crate::speed::curve_of)
                         .map_or(clip.speed, |curve| curve.speed_at(0.0));
-                    let shift = delta
-                        .min(clip.duration - MIN_CLIP_DURATION)
-                        .max(-clip.source_start / lead);
+                    // A title, a shape or a layer has no file behind it, so
+                    // there is no source to run out of: its head goes as far
+                    // left as the lane has room for.
+                    let generated = matches!(
+                        clip.kind,
+                        ClipKind::Text | ClipKind::Shape | ClipKind::Layer | ClipKind::SoundLayer
+                    );
+                    let reach = if generated {
+                        f64::NEG_INFINITY
+                    } else {
+                        -clip.source_start / lead
+                    };
+                    let shift = delta.min(clip.duration - MIN_CLIP_DURATION).max(reach);
                     // A magnetic head trim never moves the clip, so the
                     // timeline's own start is no limit to it; a plain one
                     // stops at zero.
@@ -342,7 +352,11 @@ pub(super) fn apply(
                     let mut retimed = Clip::clone(clip);
                     let consumed = crate::speed::rewindow_clip(&mut retimed, old, moved, old)
                         .unwrap_or(moved * clip.speed);
-                    let source_start = (clip.source_start + consumed).max(0.0);
+                    let source_start = if generated {
+                        clip.source_start
+                    } else {
+                        (clip.source_start + consumed).max(0.0)
+                    };
                     // Bitwise so no assignment is short-circuited away.
                     let applied = assign(&mut clip.start, start)
                         | assign(&mut clip.duration, duration)

@@ -501,6 +501,47 @@ fn gain_at(clip: &ActiveClip, local: f64) -> f32 {
     gain.max(0.0) as f32
 }
 
+/// How much sound after the playhead the meters read while paused: long
+/// enough to catch a drum hit or a syllable, short enough to follow a scrub.
+const LEVEL_WINDOW: f64 = 0.05;
+
+/// The loudest mixed sample on each side over `window` seconds from `from`.
+///
+/// The mix callback's own arithmetic for one clip set - gain, then the
+/// 48k grid read with linear interpolation - without the output: the
+/// callback is untouched, this is the paused meters' second reader of the
+/// same clips.
+fn peak_over(clips: &[ActiveClip], from: f64, window: f64) -> (f32, f32) {
+    let frames = (window * f64::from(PCM_RATE)) as usize;
+    let step = 1.0 / f64::from(PCM_RATE);
+    let (mut loudest_left, mut loudest_right) = (0.0f32, 0.0f32);
+    for n in 0..frames {
+        let position = from + n as f64 * step;
+        let (mut left, mut right) = (0.0f32, 0.0f32);
+        for clip in clips {
+            let local = position - clip.start;
+            if local < 0.0 || local >= clip.duration {
+                continue;
+            }
+            let gain = gain_at(clip, local);
+            if gain <= 0.0 {
+                continue;
+            }
+            let read = local * f64::from(PCM_RATE);
+            let index = read.floor() as i64 + clip.lead;
+            let fraction = (read - read.floor()) as f32;
+            let pcm = &clip.pcm;
+            left += gain
+                * (pcm.sample(index, 0) * (1.0 - fraction) + pcm.sample(index + 1, 0) * fraction);
+            right += gain
+                * (pcm.sample(index, 1) * (1.0 - fraction) + pcm.sample(index + 1, 1) * fraction);
+        }
+        loudest_left = loudest_left.max(left.abs());
+        loudest_right = loudest_right.max(right.abs());
+    }
+    (loudest_left, loudest_right)
+}
+
 enum Msg {
     SetClips(Vec<ActiveClip>),
     Play(f64),
@@ -884,6 +925,20 @@ impl Playback {
             f32::from_bits(self.shared.peak_left.swap(0, Ordering::Relaxed)),
             f32::from_bits(self.shared.peak_right.swap(0, Ordering::Relaxed)),
         )
+    }
+
+    /// The loudest sample each side would play in the next
+    /// [`LEVEL_WINDOW`] seconds from `position`, linear like
+    /// [`Playback::take_levels`]: what the meters show for a playhead that
+    /// is parked or scrubbed, when nothing plays and so nothing is
+    /// measured. Read from the same clips, gain and fades the mix uses.
+    /// Silent while muted, as the mix is.
+    pub fn level_at(&self, position: f64) -> (f32, f32) {
+        if self.shared.muted.load(Ordering::Relaxed) {
+            return (0.0, 0.0);
+        }
+        let clips = locked(&self.last_active).clone();
+        peak_over(&clips, position.max(0.0), LEVEL_WINDOW)
     }
 
     /// Silences the output, or lets it speak again. The clock is not

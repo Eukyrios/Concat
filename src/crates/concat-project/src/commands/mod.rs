@@ -111,6 +111,9 @@ pub struct ClipPatch {
     /// Mirror left to right.
     #[serde(default)]
     pub flip_h: Option<bool>,
+    /// The clip's group; an empty one takes it out of its group.
+    #[serde(default)]
+    pub group: Option<String>,
     /// Mirror top to bottom.
     #[serde(default)]
     pub flip_v: Option<bool>,
@@ -160,6 +163,10 @@ pub struct ClipPatch {
     )]
     #[cfg_attr(feature = "schema", schemars(with = "Option<TextStyle>"))]
     pub text: Option<Option<TextStyle>>,
+    /// A shape's paint and figure, replaced whole: the UI sends the full
+    /// style. Ignored on a clip that is not a shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shape: Option<ShapeStyle>,
     /// Which of the media's audio streams the clip plays, by stream index:
     /// absent leaves it alone, null goes back to the file's first, a value
     /// names one. See `Clip::audio_stream`.

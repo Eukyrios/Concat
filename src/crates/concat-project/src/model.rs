@@ -868,17 +868,26 @@ pub enum MaskShape {
     Heart,
     /// A five-pointed star, point up.
     Star,
+    /// A triangle, point up.
+    Triangle,
+    /// A box leaning right.
+    Parallelogram,
+    /// A box narrower at the top.
+    Trapezoid,
 }
 
 impl MaskShape {
     /// Every shape, in the order the pickers list them.
-    pub const ALL: [MaskShape; 6] = [
+    pub const ALL: [MaskShape; 9] = [
         MaskShape::Linear,
         MaskShape::Mirror,
         MaskShape::Circle,
         MaskShape::Rectangle,
         MaskShape::Heart,
         MaskShape::Star,
+        MaskShape::Triangle,
+        MaskShape::Parallelogram,
+        MaskShape::Trapezoid,
     ];
 
     /// The engine's shape.
@@ -891,6 +900,9 @@ impl MaskShape {
             MaskShape::Rectangle => Engine::Rectangle,
             MaskShape::Heart => Engine::Heart,
             MaskShape::Star => Engine::Star,
+            MaskShape::Triangle => Engine::Triangle,
+            MaskShape::Parallelogram => Engine::Parallelogram,
+            MaskShape::Trapezoid => Engine::Trapezoid,
         }
     }
 }
@@ -955,7 +967,10 @@ impl ClipMask {
             MaskShape::Linear => (1.0, 1.0),
             MaskShape::Mirror => (1.0, 0.33),
             MaskShape::Rectangle => (0.8, 0.5),
-            MaskShape::Circle | MaskShape::Heart | MaskShape::Star => (0.66, 0.66),
+            MaskShape::Parallelogram | MaskShape::Trapezoid => (0.8, 0.5),
+            MaskShape::Circle | MaskShape::Heart | MaskShape::Star | MaskShape::Triangle => {
+                (0.66, 0.66)
+            }
         };
         ClipMask {
             shape,
@@ -1983,6 +1998,13 @@ pub struct Clip {
     /// "multiply", "screen", "add", "lighten", "darken".
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub blend: String,
+    /// Layers of grouping, innermost first and outermost last, joined by
+    /// `/` ("g1/g3"). Clips that share the outermost layer are one thing to
+    /// the timeline:
+    /// selecting one selects them all, so they move, cut and export
+    /// together, whatever their lanes or media. Empty is ungrouped.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub group: String,
     /// What is cut off each edge of the source before it is fitted, as
     /// fractions of the source's width and height.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2137,6 +2159,7 @@ impl Clip {
             flip_h: false,
             flip_v: false,
             blend: String::new(),
+            group: String::new(),
             crop: None,
             cutout: None,
             mask: None,

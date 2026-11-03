@@ -129,6 +129,23 @@ fn mask_star(x: f32, y: f32) -> f32 {
     return length(p - ba * h) * mask_sign(p.y * ba.x - p.x * ba.y);
 }
 
+fn mask_edge(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
+    let e = b - a;
+    let long = max(length(e), 1e-9);
+    let n = vec2<f32>(e.y / long, -e.x / long);
+    return dot(p - a, n);
+}
+
+fn mask_triangle(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, c: vec2<f32>) -> f32 {
+    return max(max(mask_edge(p, a, b), mask_edge(p, b, c)), mask_edge(p, c, a));
+}
+
+fn mask_quad(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, c: vec2<f32>, d: vec2<f32>) -> f32 {
+    return max(
+        max(mask_edge(p, a, b), mask_edge(p, b, c)),
+        max(mask_edge(p, c, d), mask_edge(p, d, a)));
+}
+
 fn mask_distance(code: f32, p: vec2<f32>, half: vec2<f32>, radius: f32) -> f32 {
     let shape = i32(round(code));
     if (shape == 1) {
@@ -151,6 +168,22 @@ fn mask_distance(code: f32, p: vec2<f32>, half: vec2<f32>, radius: f32) -> f32 {
     }
     if (shape == 6) {
         return mask_star(p.x / half.x, -p.y / half.y) * min(half.x, half.y);
+    }
+    if (shape == 7) {
+        return mask_triangle(p,
+            vec2<f32>(0.0, -half.y), vec2<f32>(half.x, half.y), vec2<f32>(-half.x, half.y));
+    }
+    if (shape == 8) {
+        let lean = 0.4 * half.x;
+        return mask_quad(p,
+            vec2<f32>(-half.x + lean, -half.y), vec2<f32>(half.x, -half.y),
+            vec2<f32>(half.x - lean, half.y), vec2<f32>(-half.x, half.y));
+    }
+    if (shape == 9) {
+        let inset = 0.4 * half.x;
+        return mask_quad(p,
+            vec2<f32>(-half.x + inset, -half.y), vec2<f32>(half.x - inset, -half.y),
+            vec2<f32>(half.x, half.y), vec2<f32>(-half.x, half.y));
     }
     return -1.0;
 }
