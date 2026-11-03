@@ -2305,22 +2305,12 @@ export component NewProjectDialog inherits Modal {
                     // A typed frame is its own shape.
                     enabled: !root.data.busy && root.data.size < root.sizes.length;
                     block: root.narrow;
-                    // Seven shapes are past a phone's width; four to a
-                    // row there, as the sizes wrap three.
-                    per-row: root.narrow ? 4 : 0;
+                    // Seven shapes are past a phone's width, and past the
+                    // wide sheet's too once the label and the label
+                    // take their room: four to a row everywhere, or the
+                    // last chip ran under the frame and off the sheet.
+                    per-row: 4;
                     changed(index) => { root.aspect-changed(index); }
-                }
-
-                // The chosen frame at the row's end, drawn rather than
-                // described: the one thing on this sheet that shows what
-                // the numbers mean.
-                if !root.narrow: VerticalLayout {
-                    alignment: center;
-                    horizontal-stretch: 0;
-                    FrameShape {
-                        room: 32px;
-                        ratio: root.data.frame-aspect;
-                    }
                 }
             }
         }

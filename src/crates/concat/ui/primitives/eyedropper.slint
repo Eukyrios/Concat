@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 Jareer Abdullah and Concat contributors
+
+// The colour picker's dropper: take a colour from the frame on the monitor
+// and hand it to the field that asked.
+//
+// A global, because the field that asks sits deep in the inspector and the
+// pixels are on the monitor, a pane away, and neither should be threaded
+// to the other. Rust holds the state - which field asked - and publishes
+// whether the monitor is waiting for a click.
+export global Eyedropper {
+    /// Waiting for a click on the monitor's picture.
+    in property <bool> active;
+
+    /// A field asked for a colour. `field` says which one, in Rust's own
+    /// numbering.
+    callback start(field: int);
+    /// The monitor's picture was clicked, at these fractions of it.
+    callback frame-picked(x: float, y: float);
+    /// Given up on, from the monitor's hint.
+    callback cancel();
+}

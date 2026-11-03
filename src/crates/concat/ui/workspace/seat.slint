@@ -4,7 +4,7 @@
 import { Theme } from "../theme/theme.slint";
 import { Payload } from "../util.slint";
 import { DockSide } from "../dock.slint";
-import { PaneKind } from "pane-switcher.slint";
+import { PaneKind, Panes } from "pane-switcher.slint";
 import { Editor } from "../editor.slint";
 import { ConfigPane } from "config-pane.slint";
 import { MediaPane, SourcePreview } from "media-pane.slint";
@@ -140,6 +140,7 @@ export component Seat inherits Rectangle {
             transition-groups: Editor.transition-groups;
             add-text(preset) => { Editor.library-add-text(preset); }
             add-shape(shape, label) => { Editor.library-add-shape(shape, label); }
+            add-frame(shape) => { Editor.library-add-frame(shape); }
             apply-effect(id) => { Editor.library-apply-effect(id); }
             apply-transition(id) => { Editor.library-apply-transition(id); }
             apply-filter(id, label) => { Editor.library-apply-filter(id, label); }
@@ -189,7 +190,9 @@ export component Seat inherits Rectangle {
             stroke-erase: Editor.stroke-erase;
             painting: Editor.painting && Editor.selected-clip.cutout == 2;
 
+            looping: Editor.looping;
             play-toggled => { Editor.play-toggled(); }
+            loop-toggled => { Editor.loop-toggled(); }
             seek(seconds) => {
                 if (SourcePreview.open) {
                     SourcePreview.seek(seconds);
@@ -291,6 +294,10 @@ export component Seat inherits Rectangle {
             project-output: Editor.project-output;
             project-rate: Editor.project-rate;
             project-duration: Editor.project-duration;
+            project-canvas: Editor.project-canvas;
+            project-live: Editor.project-live;
+            project-edit(kind, value, text) => { Editor.project-edit(kind, value, text); }
+            canvas-changed(value) => { Editor.project-canvas-set(value); }
             count-media: Editor.count-media;
             count-tracks: Editor.count-tracks;
             count-clips: Editor.count-clips;
@@ -335,7 +342,7 @@ export component Seat inherits Rectangle {
             // the panel out of the very seat being split — both of which are
             // "nothing happens", and a target that lights up and then does
             // nothing is worse than one that never lit up.
-            return Payload.pane-seat(Payload.text(event.data)) >= 0
+            return Panes.compact && Payload.pane-seat(Payload.text(event.data)) >= 0
                 && Payload.pane-seat(Payload.text(event.data)) != root.index
                 ? DragAction.move : DragAction.none;
         }
@@ -364,7 +371,7 @@ export component Seat inherits Rectangle {
             clip-commit => { Editor.clip-commit(); }
     }
 
-    if root.kind == PaneKind.timeline: TimelinePane {
+    if root.kind == PaneKind.timeline: tl := TimelinePane {
             x: 0;
             y: 0;
             width: root.width;
@@ -374,6 +381,11 @@ export component Seat inherits Rectangle {
             pane-seat: root.index;
             pane-removable: Editor.seats.length > 1;
             pane-removed => { root.removed(); }
+
+            keyframes-shown: Editor.panels[4];
+            keyframes-closed => { Editor.panel-toggled(PaneKind.keyframes); }
+            focus-top: Editor.focus-top;
+            focus-bottom: Editor.focus-bottom;
 
             tabs: Editor.timeline-tabs;
             current-tab: Editor.timeline-current-tab;
@@ -469,6 +481,22 @@ export component Seat inherits Rectangle {
             }
             track-sized(index, size) => { Editor.track-sized(index, size); }
             track-removed(index) => { Editor.track-removed(index); }
+
+            // The keyframes tab's body. Built only while it is the tab in
+            // front, like every other view in a seat.
+            if tl.keyframes-current && tl.keyframes-shown: KeyframesPane {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                embedded: true;
+                border-radius: 0px;
+
+                selected: Editor.selected-clip;
+                clip-set(field, value) => { Editor.clip-set(field, value); }
+                adjust-set(key, value) => { Editor.adjust-set(key, value); }
+                clip-commit => { Editor.clip-commit(); }
+            }
         }
 
     // What says where the drop will land — and, on an edge, how much of the

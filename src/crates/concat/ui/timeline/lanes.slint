@@ -461,7 +461,8 @@ component Clip inherits Rectangle {
             x: root.text-x;
             y: 0;
             width: parent.width - root.text-x - 7px
-                - (root.item.fx && root.width > 60px ? root.chip-w + 6px : 0px);
+                - (root.item.fx && root.width > 60px ? root.chip-w + 6px : 0px)
+                - (root.item.framed && root.width > 60px ? root.chip-w + 6px : 0px);
             height: parent.height;
             text: root.item.name;
             color: Theme.clip-ink;
@@ -480,6 +481,27 @@ component Clip inherits Rectangle {
             fade-in: root.item.fade-in;
             fade-out: root.item.fade-out;
             px-per-second: root.px-per-second;
+        }
+
+        // The frame chip: a small frame, when the clip is cropped by one.
+        if root.item.framed && root.width > 60px: Rectangle {
+            x: parent.width - self.width - 4px
+                - (root.item.fx ? root.chip-w + 4px : 0px);
+            y: (parent.height - self.height) / 2;
+            width: root.chip-w;
+            height: root.chip;
+            border-radius: Theme.r-xs;
+            background: Theme.clip-chip;
+
+            Rectangle {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                width: parent.height * 0.55;
+                height: self.width;
+                border-radius: 2px;
+                border-width: 1.5px;
+                border-color: Theme.clip-ink;
+            }
         }
 
         // An `fx` chip when effects are live on the clip, so a styled clip is

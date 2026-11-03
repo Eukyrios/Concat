@@ -28,6 +28,11 @@ pub enum ProjectMsg {
     /// What shows where no picture covers the frame, `[r, g, b, a]` (#456).
     CanvasChanged([u8; 4]),
     Apply,
+    /// A change made straight in the Details panel: the project as it
+    /// stands is read, the change is made to that, and it is applied at
+    /// once - the sheet's own logic, with no sheet to open and press Apply
+    /// on. Never nests, and never carries `Open`, `Close` or `Apply`.
+    Live(Box<ProjectMsg>),
 }
 
 /// The project sheet's state.
@@ -58,30 +63,34 @@ impl ProjectPane {
     pub fn update(&mut self, msg: ProjectMsg, studio: &mut Studio) {
         match msg {
             ProjectMsg::Open => {
-                // The project and its active timeline as they stand.
-                let (width, height) = studio.output_size();
-                let video = studio.project().active().video;
-                let (num, den) = (video.rate_num, video.rate_den);
-                // A frame or a rate the lists do not carry opens as Custom
-                // with the project's own numbers, exact: an Apply that only
-                // renamed the project must not move its rate to the nearest
-                // row, as it once moved every 23.976 project to 30.
                 *self = ProjectPane {
                     open: true,
-                    name: studio.project_name.clone(),
-                    size: OUTPUTS
-                        .iter()
-                        .position(|size| *size == (width as i32, height as i32))
-                        .unwrap_or(OUTPUTS.len()),
-                    rate: RATES
-                        .iter()
-                        .position(|(_, n, d)| (*n, *d) == (num, den))
-                        .unwrap_or(RATES.len()),
-                    custom_size: (width, height),
-                    custom_rate: (num, den),
-                    color_space: video.color_space,
-                    canvas: video.canvas,
+                    ..Self::seeded(studio)
                 };
+            }
+            ProjectMsg::Live(inner) => {
+                if matches!(
+                    *inner,
+                    ProjectMsg::Open
+                        | ProjectMsg::Close
+                        | ProjectMsg::Apply
+                        | ProjectMsg::Live(_)
+                ) {
+                    return;
+                }
+                let mut next = Self::seeded(studio);
+                // A typed frame or rate is the custom one, whichever row the
+                // project reads as: seeded from the lists, the frame would
+                // otherwise ignore what was typed.
+                match *inner {
+                    ProjectMsg::CustomWidth(_) | ProjectMsg::CustomHeight(_) => {
+                        next.size = OUTPUTS.len();
+                    }
+                    ProjectMsg::CustomFps(_) => next.rate = RATES.len(),
+                    _ => {}
+                }
+                next.update(*inner, studio);
+                next.apply(studio);
             }
             ProjectMsg::Close => self.open = false,
             ProjectMsg::NameEdited(name) => self.name = name,
@@ -113,6 +122,40 @@ impl ProjectPane {
             ProjectMsg::CanvasChanged(canvas) => self.canvas = canvas,
             ProjectMsg::Apply => self.apply(studio),
         }
+    }
+
+    /// The project and its active timeline as they stand.
+    ///
+    /// A frame or a rate the lists do not carry reads as Custom with the
+    /// project's own numbers, exact: an Apply that only renamed the project
+    /// must not move its rate to the nearest row, as it once moved every
+    /// 23.976 project to 30.
+    fn seeded(studio: &Studio) -> ProjectPane {
+        let (width, height) = studio.output_size();
+        let video = studio.project().active().video;
+        let (num, den) = (video.rate_num, video.rate_den);
+        ProjectPane {
+            open: false,
+            name: studio.project_name.clone(),
+            size: OUTPUTS
+                .iter()
+                .position(|size| *size == (width as i32, height as i32))
+                .unwrap_or(OUTPUTS.len()),
+            rate: RATES
+                .iter()
+                .position(|(_, n, d)| (*n, *d) == (num, den))
+                .unwrap_or(RATES.len()),
+            custom_size: (width, height),
+            custom_rate: (num, den),
+            color_space: video.color_space,
+            canvas: video.canvas,
+        }
+    }
+
+    /// The Details panel's own readout of the project: the sheet's fields
+    /// as they stand, for the controls there.
+    pub fn live_data(studio: &Studio) -> ProjectSheetData {
+        Self::seeded(studio).data(studio)
     }
 
     /// Applies the sheet and closes it. The name is the project's; the

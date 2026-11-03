@@ -42,6 +42,12 @@ export enum PaneKind {
 }
 
 export global Panes {
+    /// A narrow window shows the compact dock, whose two seats can be
+    /// switched to the library or the inspector from their corner buttons.
+    /// A wide one has each panel in its own place, switched on and off from
+    /// the title bar, and no corner buttons.
+    in-out property <bool> compact;
+
     /// The window's height, published by the App (app.slint, `changed
     /// height`) because nothing below the Window can read it: a menu hung
     /// under a button measures the room beneath it against this. Zero
@@ -267,7 +273,8 @@ export component PaneSwitcher inherits Rectangle {
     property <length> caret: 10px;
     property <length> pad: 6px;
 
-    width: 2 * root.pad + root.mark + 3px + root.caret;
+    visible: Panes.compact;
+    width: Panes.compact ? 2 * root.pad + root.mark + 3px + root.caret : 0px;
     height: 24px;
 
     // The drag only starts once the press has travelled past the threshold,
@@ -412,15 +419,14 @@ export component PaneSwitcher inherits Rectangle {
     }
 }
 
-// "Add a panel", for the window's own top-right corner.
-//
-// The same list as a seat's own dropdown, minus the tick and the remove row:
-// there is nothing here yet to be current and nothing yet to close. What it
-// adds goes wherever there is most room — see `dock-add` in main.rs, which
-// halves the largest seat along its longer side, the way a tiling window
-// manager places a new window.
-export component AddPaneButton inherits Rectangle {
-    callback added(kind: PaneKind);
+// The window's panels, for its top-right corner: one button, and a list of
+// the five with a tick on each that is open. A row switches its panel on or
+// off, in the place that panel always has - there is never more than one of
+// each - and the list stays down so several can be set in one go.
+export component PanelsButton inherits Rectangle {
+    /// Which panels are up, in `PaneKind` order.
+    in property <[bool]> panels;
+    callback toggled(kind: PaneKind);
 
     property <length> menu-w: 168px;
     /// Five view rows and the surface's padding; held to the room under the
@@ -450,7 +456,7 @@ export component AddPaneButton inherits Rectangle {
     }
 
     Tip {
-        text: I18n.t("paneSwitcher.addAPanel");
+        text: I18n.t("paneSwitcher.panels");
         active: touch.has-hover;
     }
 
@@ -483,23 +489,28 @@ export component AddPaneButton inherits Rectangle {
 
                     SwitchRow {
                         kind: PaneKind.media;
-                        chosen => { menu.close(); root.added(PaneKind.media); }
+                        current: root.panels[0];
+                        chosen => { root.toggled(PaneKind.media); }
                     }
                     SwitchRow {
                         kind: PaneKind.preview;
-                        chosen => { menu.close(); root.added(PaneKind.preview); }
+                        current: root.panels[1];
+                        chosen => { root.toggled(PaneKind.preview); }
                     }
                     SwitchRow {
                         kind: PaneKind.inspector;
-                        chosen => { menu.close(); root.added(PaneKind.inspector); }
+                        current: root.panels[2];
+                        chosen => { root.toggled(PaneKind.inspector); }
                     }
                     SwitchRow {
                         kind: PaneKind.keyframes;
-                        chosen => { menu.close(); root.added(PaneKind.keyframes); }
+                        current: root.panels[4];
+                        chosen => { root.toggled(PaneKind.keyframes); }
                     }
                     SwitchRow {
                         kind: PaneKind.timeline;
-                        chosen => { menu.close(); root.added(PaneKind.timeline); }
+                        current: root.panels[3];
+                        chosen => { root.toggled(PaneKind.timeline); }
                     }
                 }
             }

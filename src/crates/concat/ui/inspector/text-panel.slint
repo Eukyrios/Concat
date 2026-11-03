@@ -492,6 +492,7 @@ export component TextPanel inherits VerticalLayout {
             label: I18n.t("common.color");
             value: root.selected.fill;
             alpha: false;
+            eyedrop: 0;
             changed(colour) => { root.set-colour(ClipTextField.color, colour); root.commit(); }
         }
 
@@ -541,6 +542,7 @@ export component TextPanel inherits VerticalLayout {
             label: I18n.t("textPanel.backgroundColor");
             value: root.selected.plate.with-alpha(1);
             alpha: false;
+            eyedrop: 2;
             changed(shade) => {
                 root.set-colour(ClipTextField.background, shade.with-alpha(root.plate-alpha));
                 root.commit();
@@ -654,6 +656,7 @@ export component TextPanel inherits VerticalLayout {
             label: I18n.t("common.color");
             value: root.selected.stroke;
             alpha: true;
+            eyedrop: 1;
             changed(shade) => {
                 root.set-colour(ClipTextField.stroke-color, shade);
                 root.commit();

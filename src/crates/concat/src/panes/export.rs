@@ -46,6 +46,16 @@ pub enum ExportMsg {
     Browse,
     /// The folder the picker answered with.
     FolderChosen(String),
+    /// A destination picked from the list: 0 is "same location as source",
+    /// then the saved presets, then "custom folder" last.
+    PresetChosen(i32),
+    /// Keep the custom folder as a preset.
+    PresetSave,
+    /// Forget the preset in use; its folder stays as the custom one.
+    PresetRemove,
+    /// The sheet is asked for on some clips alone - the right-click menu's
+    /// Export - rather than the whole timeline.
+    OpenSelection(Vec<String>),
     /// Show the finished file in the file manager.
     Reveal,
     Start,
@@ -70,7 +80,14 @@ pub enum ExportMsg {
 pub struct ExportPane {
     pub open: bool,
     pub name: String,
+    /// The custom folder: where the file goes when `preset` is -1, and the
+    /// last folder looked at otherwise.
     pub folder: String,
+    /// 0 same location as source, 1.. a saved preset, -1 the custom folder.
+    pub preset: i32,
+    /// The clips the export is of, when it is of some and not the whole
+    /// timeline: a selection, or a group.
+    pub selection: Option<Vec<String>>,
     pub resolution: usize,
     pub rate: usize,
     /// The bitrate is the typed one, not the recommended one for the
@@ -106,6 +123,8 @@ impl Default for ExportPane {
             } else {
                 "Movies"
             }),
+            preset: 0,
+            selection: None,
             resolution: 2,
             rate: 0,
             custom: false,
@@ -130,7 +149,23 @@ impl ExportPane {
     /// pane must not read.
     pub fn update(&mut self, msg: ExportMsg, studio: &mut Studio) {
         match msg {
+            ExportMsg::OpenSelection(ids) => {
+                self.open = true;
+                self.phase = ExportPhase::Idle;
+                self.rate = 0;
+                if let Some(clip) = ids.first().and_then(|id| studio.clip(id)) {
+                    let name = clip
+                        .name
+                        .replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
+                    if !name.trim().is_empty() {
+                        self.name = name;
+                    }
+                }
+                self.selection = Some(ids);
+                self.follow_canvas(studio);
+            }
             ExportMsg::Open => {
+                self.selection = None;
                 self.open = true;
                 self.phase = ExportPhase::Idle;
                 self.message.clear();
@@ -140,7 +175,10 @@ impl ExportPane {
                 self.rate = 0;
                 self.follow_canvas(studio);
             }
-            ExportMsg::Close => self.open = false,
+            ExportMsg::Close => {
+                self.open = false;
+                studio.pause();
+            }
             ExportMsg::NameEdited(name) => self.name = name,
             ExportMsg::RateChanged(index) => {
                 self.rate = (index.max(0) as usize).min(Self::rates(studio).len() - 1);
@@ -169,7 +207,7 @@ impl ExportPane {
             // message of its own; see `host::after_dialog`.
             ExportMsg::Browse => {
                 let title = i18n::t("export.exportTo");
-                let current = self.folder.clone();
+                let current = self.resolved_folder(studio);
                 crate::host::after_dialog(
                     move || platform::pick_folder(&title, &current),
                     |studio, _, _, folder| {
@@ -179,7 +217,50 @@ impl ExportPane {
                     },
                 );
             }
-            ExportMsg::FolderChosen(folder) => self.folder = folder,
+            ExportMsg::FolderChosen(folder) => {
+                self.folder = folder;
+                self.preset = -1;
+            }
+            ExportMsg::PresetChosen(index) => {
+                let n = studio.prefs.export_presets.len() as i32;
+                self.preset = if index <= 0 {
+                    0
+                } else if index > n {
+                    -1
+                } else {
+                    index
+                };
+            }
+            ExportMsg::PresetSave => {
+                let folder = self.resolved_folder(studio);
+                if folder.is_empty() {
+                    return;
+                }
+                let existing = studio
+                    .prefs
+                    .export_presets
+                    .iter()
+                    .position(|preset| preset.folder == folder);
+                let at = existing.unwrap_or_else(|| {
+                    let name = std::path::Path::new(&folder)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .filter(|n| !n.is_empty())
+                        .unwrap_or_else(|| folder.clone());
+                    studio.prefs.export_presets.push(crate::prefs::ExportPreset { name, folder });
+                    studio.prefs.save(&studio.host.dirs);
+                    studio.prefs.export_presets.len() - 1
+                });
+                self.preset = at as i32 + 1;
+            }
+            ExportMsg::PresetRemove => {
+                if self.preset >= 1 && (self.preset as usize) <= studio.prefs.export_presets.len() {
+                    let gone = studio.prefs.export_presets.remove(self.preset as usize - 1);
+                    studio.prefs.save(&studio.host.dirs);
+                    self.folder = gone.folder;
+                    self.preset = -1;
+                }
+            }
             ExportMsg::Reveal => {
                 if !self.written.is_empty()
                     && let Err(error) = platform::reveal(&self.written)
@@ -364,7 +445,34 @@ impl ExportPane {
     /// keeps to, so this is what is written, give or take.
     pub fn size_bytes(&self, studio: &Studio) -> f32 {
         let video = self.target_kbps(studio) as f32 * 1000.0;
-        (video + AUDIO_BPS) * studio.duration().max(1.0) / 8.0
+        (video + AUDIO_BPS) * self.span(studio).max(1.0) / 8.0
+    }
+
+    /// The clips this export is of: the whole timeline's, or the chosen few.
+    fn scoped<'a>(&self, studio: &'a Studio) -> Vec<&'a concat_project::model::Clip> {
+        studio
+            .timeline()
+            .clips
+            .iter()
+            .map(|clip| &**clip)
+            .filter(|clip| {
+                self.selection
+                    .as_ref()
+                    .is_none_or(|ids| ids.contains(&clip.id))
+            })
+            .collect()
+    }
+
+    /// Seconds of output: the timeline's length, or from the first chosen
+    /// clip's start to the last one's end.
+    fn span(&self, studio: &Studio) -> f32 {
+        if self.selection.is_none() {
+            return studio.duration();
+        }
+        let clips = self.scoped(studio);
+        let start = clips.iter().map(|c| c.start).fold(f64::INFINITY, f64::min);
+        let end = clips.iter().map(|c| c.start + c.duration).fold(0.0, f64::max);
+        (end - start).max(0.0) as f32
     }
 
     /// The codec a sheet opens on follows the canvas (#456): a timeline
@@ -456,7 +564,7 @@ impl ExportPane {
         };
         let output = format!(
             "{}/{name}.{}",
-            self.folder.trim_end_matches('/'),
+            self.resolved_folder(studio).trim_end_matches(['/', '\\']),
             self.codec(studio).container()
         );
         // A file already there is replaced once the person has said so:
@@ -493,14 +601,30 @@ impl ExportPane {
             hdr: self.hdr(studio),
         };
         let (frame_w, frame_h) = studio.output_size();
+        // Some clips alone: the project cut down to them, moved to zero.
+        let chosen = self
+            .selection
+            .as_ref()
+            .and_then(|ids| export::selection_project(session.project(), ids));
         let titles = studio
             .host
             .titles
-            .clips(session.project(), frame_w, frame_h)
+            .clips(
+                chosen
+                    .as_ref()
+                    .map_or_else(|| session.project(), |(project, _)| project),
+                frame_w,
+                frame_h,
+            )
             .into_iter()
             .map(|title| title.clip)
             .collect();
-        let mut request = export::request(session, &spec, titles);
+        let mut request = match &chosen {
+            Some((project, offset)) => {
+                export::request_for_selection(project, *offset, session, &spec, titles)
+            }
+            None => export::request(session, &spec, titles),
+        };
         let (width, height) = self.size(studio);
         let (num, den) = self.rate(studio);
         request.width = width;
@@ -561,15 +685,51 @@ impl ExportPane {
         );
     }
 
+    /// The folder the file goes to, by the destination picked.
+    fn resolved_folder(&self, studio: &Studio) -> String {
+        match self.preset {
+            0 => Self::source_folder(studio).unwrap_or_else(|| self.folder.clone()),
+            k if k >= 1 => studio
+                .prefs
+                .export_presets
+                .get(k as usize - 1)
+                .map(|preset| preset.folder.clone())
+                .unwrap_or_else(|| self.folder.clone()),
+            _ => self.folder.clone(),
+        }
+    }
+
+    /// Where the footage came from: the folder of the first clip on the
+    /// timeline that is a file on disk.
+    fn source_folder(studio: &Studio) -> Option<String> {
+        let project = studio.project();
+        studio
+            .timeline()
+            .clips
+            .iter()
+            .filter_map(|clip| project.media.iter().find(|m| m.id == clip.media_id))
+            .filter_map(|item| std::path::Path::new(&item.path).parent())
+            .map(|dir| dir.to_string_lossy().into_owned())
+            .find(|dir| !dir.is_empty())
+    }
+
+    /// The list's index for the destination in use.
+    fn preset_index(&self, studio: &Studio) -> i32 {
+        if self.preset < 0 {
+            studio.prefs.export_presets.len() as i32 + 1
+        } else {
+            self.preset
+        }
+    }
+
     /// The sheet as Slint shows it.
     pub fn data(&self, studio: &Studio) -> ExportData {
         let (width, height) = self.size(studio);
         let (num, den) = self.rate(studio);
         let rate = num as f32 / den as f32;
-        let clips = studio.timeline().clips.len();
-        let titles = studio
-            .timeline()
-            .clips
+        let scoped = self.scoped(studio);
+        let clips = scoped.len();
+        let titles = scoped
             .iter()
             .filter(|clip| clip.kind == concat_project::model::ClipKind::Text)
             .count();
@@ -577,6 +737,18 @@ impl ExportPane {
         ExportData {
             open: self.open,
             name: self.name.as_str().into(),
+            folder: self.resolved_folder(studio).into(),
+            preset: self.preset_index(studio),
+            presets: {
+                let mut names: Vec<SharedString> = vec![t("export.sameAsSource").into()];
+                names.extend(studio.prefs.export_presets.iter().map(|p| SharedString::from(p.name.as_str())));
+                names.push(t("export.customFolder").into());
+                ModelRc::new(VecModel::from(names))
+            },
+            can_save_preset: self.preset == -1
+                && !self.folder.is_empty()
+                && !studio.prefs.export_presets.iter().any(|p| p.folder == self.folder),
+            can_remove_preset: self.preset >= 1,
             // Where the file ends up: on a phone, the folder its gallery
             // shows, not the app's own that the export writes into.
             // The name as it will be written: trimmed, as `begin` trims it.
@@ -584,14 +756,14 @@ impl ExportPane {
                 Some(folder) => format!("{folder}/{}.{container}", self.name.trim()),
                 None => format!(
                     "{}/{}.{container}",
-                    self.folder.trim_end_matches('/'),
+                    self.resolved_folder(studio).trim_end_matches(['/', '\\']),
                     self.name.trim()
                 ),
             }
             .into(),
             format: format!("{width} × {height} · {rate:.2} fps").into(),
             duration: {
-                let whole = studio.duration().max(0.0) as i32;
+                let whole = self.span(studio).max(0.0) as i32;
                 format!("{}:{:02}", whole / 60, whole % 60).into()
             },
             contents: if titles > 0 {

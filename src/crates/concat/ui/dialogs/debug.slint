@@ -1,0 +1,90 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 Jareer Abdullah and Concat contributors
+
+import { I18n } from "../i18n.slint";
+import { Theme } from "../theme/theme.slint";
+import { Glyph } from "../icons.slint";
+import { Modal } from "../primitives/modal.slint";
+import { IconButton } from "../primitives/panel.slint";
+
+// The debug window: the end of this run's log, for the moments a terminal
+// would have been the place to look. Refresh reads it again, Copy takes the
+// lot for a report.
+export component DebugDialog inherits Modal {
+    in property <string> log;
+
+    callback refresh();
+
+    title: I18n.t("settings.debugLog");
+    glyph: Glyph.bug;
+    surface-width: 760px;
+    surface-height: 520px;
+
+    changed open => {
+        if (root.open) {
+            root.refresh();
+        }
+    }
+
+    VerticalLayout {
+        vertical-stretch: 1;
+        padding: 14px;
+        spacing: 8px;
+
+        HorizontalLayout {
+            min-height: 28px;
+            max-height: 28px;
+            alignment: end;
+            spacing: 6px;
+
+            IconButton {
+                glyph: Glyph.reset;
+                label: I18n.t("settings.refreshLog");
+                icon-size: 13px;
+                clicked => { root.refresh(); }
+            }
+
+            IconButton {
+                glyph: Glyph.copy;
+                label: I18n.t("settings.copyLog");
+                icon-size: 13px;
+                clicked => {
+                    log-text.select-all();
+                    log-text.copy();
+                    log-text.clear-selection();
+                }
+            }
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+            background: Theme.field;
+            border-radius: Theme.r-sm;
+            clip: true;
+
+            property <string> shown: root.log;
+            // Newest lines are at the bottom: land there.
+            changed shown => {
+                log-flick.content-y = Math.min(0px, log-flick.height - log-flick.content-height);
+            }
+
+            log-flick := Flickable {
+                content-height: log-text.preferred-height + 16px;
+                log-text := TextInput {
+                    x: 8px;
+                    y: 8px;
+                    width: parent.width - 16px;
+                    text: root.log;
+                    color: Theme.fg;
+                    font-family: Theme.font-technical;
+                    font-size: Theme.fs;
+                    read-only: true;
+                    single-line: false;
+                    wrap: word-wrap;
+                    selection-background-color: Theme.accent;
+                    selection-foreground-color: Theme.on-accent;
+                }
+            }
+        }
+    }
+}

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Jareer Abdullah and Concat contributors
 
+import { I18n } from "../i18n.slint";
 import { Theme } from "../theme/theme.slint";
 import { Focus, Payload } from "../util.slint";
 import { Glyph, Icon } from "../icons.slint";
@@ -26,6 +27,8 @@ component Tab inherits Rectangle {
     in property <bool> current;
     /// last tab standing: nothing to close down to
     in property <bool> closable;
+    /// Double-click renames. Off for the keyframes tab, which has one name.
+    in property <bool> renamable: true;
 
     callback selected();
     callback renamed(name: string);
@@ -69,7 +72,7 @@ component Tab inherits Rectangle {
             root.selected();
         }
         double-clicked => {
-            root.renaming = true;
+            root.renaming = root.renamable;
         }
 
         label := Text {
@@ -175,11 +178,17 @@ component Tab inherits Rectangle {
 export component TimelineTabs inherits Rectangle {
     in property <[TimelineTabData]> tabs;
     in property <int> current;
+    /// The keyframes tab, which follows the timelines' own while it is open.
+    /// It is the pane's to show or hide (the title bar's Keyframes button),
+    /// and it is current when the keys, not a timeline, are on screen.
+    in property <bool> keyframes-shown;
+    in property <bool> keyframes-current;
 
+    callback keyframes-selected();
+    callback keyframes-closed();
     callback selected(index: int);
     callback renamed(index: int, name: string);
     callback close-requested(index: int);
-    callback added();
     /// Tab `from` was dropped at `to`, a slot counted over the strip as it
     /// stands - so `to` may be one past the end, and may sit either side
     /// of `from` itself. Rust discounts the moving tab.
@@ -234,15 +243,14 @@ export component TimelineTabs inherits Rectangle {
         background: Theme.line;
     }
 
-    // As wide as the tabs when they fit, so the add button stays beside the
-    // last one; as wide as the room leaves when they do not. The room is the
-    // strip less the add button's column and the corner slot, which are
-    // pinned outside the viewport so they can always be reached.
+    // As wide as the tabs when they fit; as wide as the room leaves when they
+    // do not. The room is the strip less the corner slot, which is pinned
+    // outside the viewport so it can always be reached.
     viewport := Rectangle {
         x: 8px;
         y: 0;
         width: Math.max(0px, Math.min(strip.preferred-width,
-            root.width - self.x - 2px - adder.width - trailing.preferred-width));
+            root.width - self.x - 2px - trailing.preferred-width));
         height: root.height;
         clip: true;
 
@@ -309,7 +317,7 @@ export component TimelineTabs inherits Rectangle {
 
                             held := Tab {
                                 name: tab.name;
-                                current: index == root.current;
+                                current: index == root.current && !root.keyframes-current;
                                 closable: root.tabs.length > 1;
                                 // Faded while in the air, as a bin card is.
                                 opacity: drag.dragging ? 0.45 : 1.0;
@@ -351,6 +359,24 @@ export component TimelineTabs inherits Rectangle {
                         }
                     }
                 }
+
+                // The keyframes tab, last in the strip: not a timeline, so it
+                // is not dragged, renamed or counted among them.
+                if root.keyframes-shown: VerticalLayout {
+                    alignment: end;
+
+                    Tab {
+                        name: I18n.t("common.keyframes");
+                        current: root.keyframes-current;
+                        // Never closed from here: it is a view of the
+                        // timeline, shown or hidden from the panels menu.
+                        closable: false;
+                        renamable: false;
+
+                        selected => { root.keyframes-selected(); }
+                        close-requested => { root.keyframes-closed(); }
+                    }
+                }
             }
         }
 
@@ -373,42 +399,6 @@ export component TimelineTabs inherits Rectangle {
             width: 14px;
             height: parent.height - 1px;
             background: @linear-gradient(90deg, Colors.transparent 0%, Theme.well 100%);
-        }
-    }
-
-    // The add button, pinned to the viewport's trailing edge: beside the last
-    // tab when they all fit, at the pane's edge when they do not. Placed by
-    // hand for the same reason the viewport is.
-    adder := VerticalLayout {
-        x: viewport.x + viewport.width + 2px;
-        y: 0;
-        width: 26px;
-        height: root.height;
-        alignment: end;
-        padding-left: 2px;
-        padding-right: 2px;
-        padding-bottom: 4px;
-
-        add := Rectangle {
-            width: 22px;
-            height: 22px;
-            border-radius: Theme.r-xs;
-            background: plus.has-hover ? Theme.field : Colors.transparent;
-
-            animate background { duration: 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
-
-            Icon {
-                x: (parent.width - self.width) / 2;
-                y: (parent.height - self.height) / 2;
-                glyph: Glyph.plus;
-                size: 12px;
-                tint: plus.has-hover ? Theme.fg : Theme.fg-dim;
-            }
-
-            plus := TouchArea {
-                mouse-cursor: pointer;
-                clicked => { root.added(); }
-            }
         }
     }
 

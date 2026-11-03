@@ -50,6 +50,8 @@ import {
     MissingMediaItem,
 } from "dialogs/relink.slint";
 import { ConfirmData, ConfirmDialog } from "dialogs/confirm.slint";
+import { DebugDialog } from "dialogs/debug.slint";
+import { Eyedropper } from "primitives/eyedropper.slint";
 import { CaptionsDialog, CaptionsSheetData } from "dialogs/captions.slint";
 import { SpeechDialog, SpeechSheetData } from "dialogs/speech.slint";
 import { NewVoiceData, NewVoiceDialog } from "dialogs/new-voice.slint";
@@ -111,6 +113,7 @@ import {
 import { SpeedRamp } from "inspector/speed-ramp.slint";
 
 export {
+    Eyedropper,
     Curves,
     Fmt,
     Focus,
@@ -129,6 +132,7 @@ export {
     DockDivider,
     DockSide,
     PaneKind,
+    Panes,
     SeatBox,
     EffectData,
     FontSearch,
@@ -353,10 +357,17 @@ export component App inherits Window {
     /// process.
     in property <[SystemFactData]> system-facts;
     in property <string> system-report;
+    /// Settings > About's Debug section: the log's latest lines.
+    in property <string> debug-log;
+    callback refresh-log();
+    in-out property <bool> debug-open;
 
     callback export-closed();
     callback export-name-edited(name: string);
     callback export-browse();
+    callback export-preset-chosen(index: int);
+    callback export-preset-save();
+    callback export-preset-remove();
     callback export-rate-changed(index: int);
     callback export-codec-changed(index: int);
     callback export-ten-bit-changed(on: bool);
@@ -737,7 +748,10 @@ export component App inherits Window {
                 minimize => { root.titlebar-minimize(); }
                 close => { root.titlebar-close(); }
                 open-settings => { root.open-settings(); }
-                add-pane(kind) => { Editor.dock-add(kind); }
+                home-clicked => { root.app-menu-selected("close-project"); }
+                debug-clicked => { root.debug-open = true; root.refresh-log(); }
+                panels: Editor.panels;
+                panel-toggled(kind) => { Editor.panel-toggled(kind); }
                 export-clicked => { root.export-clicked(); }
             }
 
@@ -962,11 +976,18 @@ export component App inherits Window {
         playhead: Editor.playhead;
         duration-seconds: Editor.duration-seconds;
         frame-rate: Editor.frame-rate;
+        playing: Editor.playing;
+        looping: Editor.looping;
+        play-toggle => { Editor.play-toggled(); }
+        loop-toggle => { Editor.loop-toggled(); }
         seek(seconds) => { Editor.seek(seconds); }
 
         closed => { root.export-closed(); }
         name-edited(name) => { root.export-name-edited(name); }
         browse => { root.export-browse(); }
+        preset-chosen(index) => { root.export-preset-chosen(index); }
+        preset-save => { root.export-preset-save(); }
+        preset-remove => { root.export-preset-remove(); }
         rate-changed(index) => { root.export-rate-changed(index); }
         codec-changed(index) => { root.export-codec-changed(index); }
         ten-bit-changed(on) => { root.export-ten-bit-changed(on); }
@@ -1105,6 +1126,21 @@ export component App inherits Window {
     in property <ConfirmData> confirm;
     callback confirm-accepted();
     callback confirm-dismissed();
+
+    DebugDialog {
+        inset-top: root.safe-area-insets.top;
+        inset-bottom: root.safe-area-insets.bottom;
+        inset-left: root.safe-area-insets.left;
+        inset-right: root.safe-area-insets.right;
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        open: root.debug-open;
+        log: root.debug-log;
+        refresh => { root.refresh-log(); }
+        closed => { root.debug-open = false; }
+    }
 
     ConfirmDialog {
         inset-top: root.safe-area-insets.top;

@@ -4,7 +4,8 @@
 import { I18n } from "i18n.slint";
 import { Theme } from "theme/theme.slint";
 import { Glyph, Icon } from "icons.slint";
-import { AddPaneButton, PaneKind } from "workspace/pane-switcher.slint";
+import { PaneKind, Panes, PanelsButton } from "workspace/pane-switcher.slint";
+import { Tip } from "primitives/tooltip.slint";
 
 // The custom title bar.
 //
@@ -80,13 +81,16 @@ component MenuLabel inherits Rectangle {
 
 component HeaderIconButton inherits Rectangle {
     in property <Glyph> glyph;
+    /// A switch that is on: the mark takes the accent and the ground stays.
+    in property <bool> active;
+    in property <string> tip;
 
     callback clicked();
 
     width: 24px;
     height: 24px;
     border-radius: Theme.r-sm;
-    background: touch.has-hover ? Theme.field : Colors.transparent;
+    background: touch.has-hover || root.active ? Theme.field : Colors.transparent;
 
     animate background { duration: 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
 
@@ -95,12 +99,17 @@ component HeaderIconButton inherits Rectangle {
         y: (parent.height - self.height) / 2;
         glyph: root.glyph;
         size: 14px;
-        tint: touch.has-hover ? Theme.fg : Theme.fg-muted;
+        tint: root.active ? Theme.accent : touch.has-hover ? Theme.fg : Theme.fg-muted;
     }
 
     touch := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
+    }
+
+    if root.tip != "": Tip {
+        text: root.tip;
+        active: touch.has-hover;
     }
 }
 
@@ -145,8 +154,15 @@ export component TitleBar inherits Rectangle {
     in property <int> keyboard-menu: -1;
     in property <int> keyboard-token;
     callback open-settings();
-    /// A view was picked from the add-panel list.
-    callback add-pane(kind: PaneKind);
+    /// Back to the launch screen (saves the project first).
+    callback home-clicked();
+    /// The debug window was asked for.
+    callback debug-clicked();
+    /// A panel was switched on or off. Each has one place of its own.
+    callback panel-toggled(kind: PaneKind);
+    /// Which panels are up, in PaneKind order: library, preview, inspector,
+    /// timeline, keyframes.
+    in property <[bool]> panels;
     callback export-clicked();
 
     height: 32px;
@@ -199,6 +215,16 @@ export component TitleBar inherits Rectangle {
         padding-right: root.own-buttons ? 0px : 8px;
         spacing: 2px;
 
+        // Home, top left: the way back to the launch screen from an edit.
+        // Not on the launch screen itself, where it would lead nowhere.
+        if !root.minimal: VerticalLayout {
+            alignment: center;
+            HeaderIconButton {
+                glyph: Glyph.home;
+                clicked => { root.home-clicked(); }
+            }
+        }
+
         // No mark and no wordmark: the strip opens on the menus. A window
         // does not need to say whose it is on every frame, and the launch
         // screen's heading already carries the name where it means something.
@@ -246,32 +272,29 @@ export component TitleBar inherits Rectangle {
             }
         }
 
-        Rectangle { horizontal-stretch: 1; }
-
-        // Beside Settings, because it is the same sort of thing: neither one
-        // is about the project, both are about the window you are looking at
-        // it through. A seat's own corner button changes or closes that seat;
-        // this is the only place a seat can be brought into existence, which
-        // is why it lives on the window and not in a pane.
-        if !root.minimal: VerticalLayout {
-            alignment: center;
-            AddPaneButton {
-                added(kind) => { root.add-pane(kind); }
-            }
+        // Settings and Debug are the window's own and not a project's, so
+        // they are on the launch screen too, worded rather than a gear: the
+        // theme, the models and the log all live behind them.
+        MenuLabel {
+            label: I18n.t("titleBar.settings");
+            clicked => { root.open-settings(); }
+        }
+        MenuLabel {
+            label: I18n.t("titleBar.debug");
+            clicked => { root.debug-clicked(); }
         }
 
-        // The one control that is on both screens, and the theme's sun and
-        // moon gave it the job when they moved into Settings > Appearance.
-        // Nothing behind this gear needs a project — a theme, a transcriber
-        // model, a voice, a version number are all facts about the
-        // application — so the launch screen has no reason to be shut out of
-        // it, and every reason not to be: it is now the only way through to
-        // the theme.
-        VerticalLayout {
+        Rectangle { horizontal-stretch: 1; }
+
+        // The panels: one button, and a list of them to switch on and off.
+        // Each has a place of its own, so there is never more than one of
+        // each. Not on the narrow window's compact dock, which has two seats
+        // and a switcher on each.
+        if !root.minimal && !Panes.compact: VerticalLayout {
             alignment: center;
-            HeaderIconButton {
-                glyph: Glyph.settings;
-                clicked => { root.open-settings(); }
+            PanelsButton {
+                panels: root.panels;
+                toggled(kind) => { root.panel-toggled(kind); }
             }
         }
 

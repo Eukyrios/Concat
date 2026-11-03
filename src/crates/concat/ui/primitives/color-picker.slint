@@ -19,7 +19,13 @@ import { NumberField } from "number-field.slint";
 export component ColorPicker inherits VerticalLayout {
     /// The colour. The owner binds it; the picker reports every change and
     /// re-reads it when it changes from outside.
-    in-out property <color> value;
+    in property <color> value;
+    /// What the picker is showing. Held apart from `value` because the
+    /// picker moves it as the pointer drags, and assigning to `value` would
+    /// replace the owner's binding for good: after one drag the picker would
+    /// no longer follow an undo, a dropper or anything else that changed the
+    /// colour from outside.
+    property <color> live;
     /// The colour has an alpha of its own: show the strip and the field.
     /// Off for a colour whose opacity is a dial elsewhere, like a title's
     /// fill under the title's own Opacity.
@@ -39,28 +45,28 @@ export component ColorPicker inherits VerticalLayout {
     property <color> emitted;
 
     function seed() {
-        root.hue = root.value.to-hsv().hue;
-        root.sat = root.value.to-hsv().saturation;
-        root.val = root.value.to-hsv().value;
-        root.alpha-v = root.alpha ? root.value.to-hsv().alpha : 1;
+        root.hue = root.live.to-hsv().hue;
+        root.sat = root.live.to-hsv().saturation;
+        root.val = root.live.to-hsv().value;
+        root.alpha-v = root.alpha ? root.live.to-hsv().alpha : 1;
         root.sync();
     }
 
     /// The fields hold their own numbers once typed in, so they are told
     /// rather than bound.
     function sync() {
-        red.value = root.value.red;
-        green.value = root.value.green;
-        blue.value = root.value.blue;
+        red.value = root.live.red;
+        green.value = root.live.green;
+        blue.value = root.live.blue;
         alpha-field.value = Math.round(root.alpha-v * 100);
         if (!hex.has-focus) {
-            hex.text = Fmt.hex-of(root.value, root.alpha);
+            hex.text = Fmt.hex-of(root.live, root.alpha);
         }
     }
 
     function emit(next: color) {
         root.emitted = next;
-        root.value = next;
+        root.live = next;
         root.sync();
         root.changed(next);
     }
@@ -79,9 +85,13 @@ export component ColorPicker inherits VerticalLayout {
         root.alpha-v = root.alpha ? next.to-hsv().alpha : 1;
     }
 
-    init => { root.seed(); }
+    init => {
+        root.live = root.value;
+        root.seed();
+    }
     changed value => {
         if (root.value != root.emitted) {
+            root.live = root.value;
             root.seed();
         }
     }
@@ -233,7 +243,7 @@ export component ColorPicker inherits VerticalLayout {
                 height: 7px;
                 background: Math.mod(cell + Math.floor(cell / 4), 2) == 0 ? #c8c8c8 : #7a7a7a;
             }
-            Rectangle { background: root.value; }
+            Rectangle { background: root.live; }
         }
 
         Rectangle {
@@ -256,10 +266,10 @@ export component ColorPicker inherits VerticalLayout {
                 selection-background-color: Theme.accent;
                 selection-foreground-color: Theme.on-accent;
 
-                accepted => { root.adopt(Fmt.color-of(self.text, root.value)); }
+                accepted => { root.adopt(Fmt.color-of(self.text, root.live)); }
                 changed has-focus => {
                     if (!self.has-focus) {
-                        root.adopt(Fmt.color-of(self.text, root.value));
+                        root.adopt(Fmt.color-of(self.text, root.live));
                     }
                 }
             }
@@ -275,21 +285,21 @@ export component ColorPicker inherits VerticalLayout {
             minimum: 0;
             maximum: 255;
             step: 1;
-            changed(v) => { root.adopt(rgb(v, root.value.green, root.value.blue).with-alpha(root.alpha-v)); }
+            changed(v) => { root.adopt(rgb(v, root.live.green, root.live.blue).with-alpha(root.alpha-v)); }
         }
         green := NumberField {
             prefix: "G";
             minimum: 0;
             maximum: 255;
             step: 1;
-            changed(v) => { root.adopt(rgb(root.value.red, v, root.value.blue).with-alpha(root.alpha-v)); }
+            changed(v) => { root.adopt(rgb(root.live.red, v, root.live.blue).with-alpha(root.alpha-v)); }
         }
         blue := NumberField {
             prefix: "B";
             minimum: 0;
             maximum: 255;
             step: 1;
-            changed(v) => { root.adopt(rgb(root.value.red, root.value.green, v).with-alpha(root.alpha-v)); }
+            changed(v) => { root.adopt(rgb(root.live.red, root.live.green, v).with-alpha(root.alpha-v)); }
         }
         alpha-field := NumberField {
             visible: root.alpha;

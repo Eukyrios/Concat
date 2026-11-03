@@ -158,6 +158,7 @@ export enum Glyph {
     book,
     circle-play,
     bug,
+    pipette,
     arrow-up-right,
     /// two marks of other people's, filled, from Simple Icons (CC0): the
     /// repository's host and the community's chat
@@ -171,6 +172,9 @@ export enum Glyph {
     move,
     wand,
     sliders,
+    /// the title bar's way back to the launch screen
+    home,
+    repeat,
 }
 
 component Stroked inherits Path {
@@ -265,6 +269,26 @@ export component Icon inherits Rectangle {
         size: root.size; tint: root.tint; weight: root.weight;
         commands: "M9 9.003a1 1 0 0 1 1.517 -.859l4.997 2.997a1 1 0 0 1 0 1.718l-4.997 2.997"
             + "A1 1 0 0 1 9 14.996z M2 12a10 10 0 1 0 20 0a10 10 0 1 0 -20 0";
+    }
+
+    // lucide/repeat
+    if root.glyph == Glyph.repeat: Stroked {
+        size: root.size; tint: root.tint; weight: root.weight;
+        commands: "M17 2l4 4-4 4 M3 11v-1a4 4 0 0 1 4-4h14 M7 22l-4-4 4-4 M21 13v1a4 4 0 0 1-4 4H3";
+    }
+
+    // lucide/house
+    if root.glyph == Glyph.home: Stroked {
+        size: root.size; tint: root.tint; weight: root.weight;
+        commands: "M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"
+            + " M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z";
+    }
+
+    // lucide/pipette
+    if root.glyph == Glyph.pipette: Stroked {
+        size: root.size; tint: root.tint; weight: root.weight;
+        commands: "M2 22l1 -1h3l9 -9 M3 21v-3l9 -9"
+            + " M15 6l3.4 -3.4a2.1 2.1 0 1 1 3 3L18 9l.4 .4a2.1 2.1 0 1 1 -3 3l-3.8 -3.8a2.1 2.1 0 1 1 3 -3l.4 .4z";
     }
 
     // lucide/bug

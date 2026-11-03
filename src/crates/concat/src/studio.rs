@@ -52,7 +52,7 @@ use masking::{MaskFrame, MaskGrip};
 use slint::{Model, ModelRc, SharedString, VecModel};
 
 use crate::dock::{
-    Dock, DockLayout, SEAT_GAP, default_dock, lay_out, nearest_row, row_at, row_top,
+    Dock, DockLayout, Panels, Ratios, SEAT_GAP, build_dock, lay_out, nearest_row, row_at, row_top,
 };
 use crate::format::{
     WAVE_BAR, WAVE_PITCH, colour_of, frames_timecode, hex_of, hex_rgba, hex_with_alpha, rate_label,
@@ -431,6 +431,13 @@ pub struct ToastState {
     pub token: i32,
     pub message: String,
     pub failed: bool,
+    /// Shown centred at the top, not in the corner.
+    pub top: bool,
+}
+
+/// The outermost layer of a clip's `group` path.
+fn outer_group(group: &str) -> &str {
+    group.rsplit('/').next().unwrap_or("")
 }
 
 /// Which edge of a clip a trim has hold of.
@@ -508,6 +515,29 @@ pub enum Gesture {
         from: f64,
         /// The picture's turn, to project the pointer onto its axes.
         rotation: f64,
+    },
+    /// A grip dragged on a sticker (a shape): only the side or corner that
+    /// was taken moves, and the opposite one stays where it is, so the figure
+    /// is pulled out of shape rather than scaled. Held with shift it is the
+    /// uniform kind instead: a corner scales the whole figure about its
+    /// centre and an edge pulls both its sides.
+    ///
+    /// `grip` is the grip's direction in the box's own frame: `-1`, `0` or
+    /// `1` along each axis, the side it took being the one that points that
+    /// way.
+    StageSide {
+        clip: String,
+        grip: (f64, f64),
+        /// The centre at the press, in frame pixels.
+        centre: (f64, f64),
+        /// Half the box's own width and height at the press, in frame pixels.
+        half: (f64, f64),
+        /// The box's turn, to project the pointer onto its axes.
+        rotation: f64,
+        /// Stretch, scale and offset as they were at the press.
+        stretch: (f64, f64),
+        scale: f64,
+        offset: (f64, f64),
     },
     /// A side grip on a title pulls the width its words wrap at, not the
     /// glyphs: the box edge follows the pointer and the words reflow into
@@ -720,6 +750,7 @@ pub struct Models {
     /// is this one.
     pub versions: Rc<VecModel<SharedString>>,
     pub version_details: Rc<VecModel<SharedString>>,
+    pub panels: Rc<VecModel<bool>>,
     pub seats: Rc<VecModel<SeatBox>>,
     pub dividers: Rc<VecModel<DockDivider>>,
     pub recents: Rc<VecModel<RecentProjectData>>,
@@ -797,6 +828,7 @@ impl Models {
             voices: Rc::new(VecModel::default()),
             versions: Rc::new(VecModel::default()),
             version_details: Rc::new(VecModel::default()),
+            panels: Rc::new(VecModel::default()),
             seats: Rc::new(VecModel::default()),
             dividers: Rc::new(VecModel::default()),
             recents: Rc::new(VecModel::default()),
@@ -940,6 +972,14 @@ pub struct Studio {
 
     // ── the workspace ──
     pub dock: Dock,
+    /// Which panels are open; the wide dock is built from it.
+    pub panels: Panels,
+    /// The gutters of the wide dock as last dragged, kept for the next time
+    /// a panel's switching rebuilds it.
+    pub ratios: Ratios,
+    /// The colour field waiting on the dropper (0 fill, 1 outline, 2
+    /// background), once it has been asked for.
+    pub eyedrop: Option<i32>,
     /// The dock not showing: the compact one while the window is wide,
     /// the wide one while it is compact. Swapped with `dock` as the
     /// window crosses `COMPACT_WIDTH`, so each keeps its shape.
@@ -1725,6 +1765,9 @@ fn clip_commands(id: &str, before: &Clip, after: &Clip, magnetic: bool) -> Vec<C
     if after.text != before.text {
         patch.text = Some(after.text.clone());
     }
+    if after.shape != before.shape {
+        patch.shape = after.shape.clone();
+    }
     if after.video_effects != before.video_effects {
         patch.video_effects = Some(after.video_effects.clone());
     }
@@ -2350,6 +2393,7 @@ impl Studio {
     /// read off disk.
     pub fn new(host: Host) -> Self {
         let prefs = Preferences::load(&host.dirs);
+        let panels = Panels::from_names(prefs.panels.as_deref());
         let mut start = crate::panes::start::StartPane::default();
         if let Some(location) = prefs.project_location() {
             start.location = location.to_owned();
@@ -2420,7 +2464,10 @@ impl Studio {
             posters_pending: HashSet::new(),
             lengths: HashMap::new(),
             project_name: t("common.untitledProject"),
-            dock: default_dock(),
+            dock: build_dock(&panels, &Ratios::default()),
+            panels,
+            ratios: Ratios::default(),
+            eyedrop: None,
             dock_aside: crate::dock::compact_dock(),
             compact: false,
             workspace: (0.0, 0.0),
@@ -3223,7 +3270,16 @@ impl Studio {
                             }
                         }
                         if position >= end {
-                            studio.pause();
+                            if studio.prefs.loop_playback && end > 0.0 {
+                                // Round again, still playing: the clock
+                                // jumps to the start and the picture follows.
+                                studio.playhead = 0.0;
+                                studio.host.playback.seek(0.0);
+                                shown = None;
+                                studio.request_preview();
+                            } else {
+                                studio.pause();
+                            }
                         } else {
                             studio.request_preview();
                         }
@@ -3232,6 +3288,12 @@ impl Studio {
                 });
             },
         );
+    }
+
+    /// Loop on or off: playback starts over at the end while it is on.
+    pub fn loop_toggle(&mut self) {
+        self.prefs.loop_playback = !self.prefs.loop_playback;
+        self.prefs.save(&self.host.dirs);
     }
 
     pub fn pause(&mut self) {
@@ -3253,6 +3315,9 @@ impl Studio {
         // The textures playback streamed through are let go once it stops.
         if was_playing {
             self.host.monitor.shrink();
+            // The meters stop on the level at the playhead rather than
+            // falling away to nothing.
+            self.show_level_at_playhead();
         }
     }
 
@@ -3279,6 +3344,8 @@ impl Studio {
         // A phone's lanes move under a playhead held at their middle.
         self.lanes.recentre(self.playhead);
         self.host.playback.seek(f64::from(self.playhead));
+        // Parked or scrubbed: the meters show the sound under the playhead.
+        self.show_level_at_playhead();
         self.request_preview();
     }
 
@@ -4080,6 +4147,120 @@ impl Studio {
 
     /// A card clicked rather than dragged: the playhead names the moment
     /// and the engine finds a lane with room.
+    /// The active timeline's canvas, as the channels it is stored in.
+    fn timeline_canvas(&self) -> [u8; 4] {
+        self.project().active().video.canvas
+    }
+
+    /// The Details panel's Background row: the timeline's canvas becomes
+    /// `colour`, as one edit the undo takes back, and the monitor redraws.
+    pub fn set_project_canvas(&mut self, colour: slint::Color) {
+        let canvas = [colour.red(), colour.green(), colour.blue(), colour.alpha()];
+        if self.timeline_canvas() == canvas {
+            return;
+        }
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        let mut video = session.video();
+        video.canvas = canvas;
+        let timeline_id = self.project().active_timeline_id.clone();
+        self.apply(Command::SetTimelineVideo { timeline_id, video });
+        self.request_preview();
+    }
+
+    /// A frame from the Frames shelf: the pictures it was chosen for - the
+    /// selected videos and stills, or when none is selected the topmost one
+    /// under the playhead - are cropped to the figure `id` names, as a mask
+    /// the stage's grips then move and size. The same frame chosen again
+    /// takes it off, as does `none`.
+    pub fn apply_frame(&mut self, id: &str) {
+        let shape = match id {
+            "none" => None,
+            "square" => Some(model::MaskShape::Rectangle),
+            "circle" => Some(model::MaskShape::Circle),
+            "triangle" => Some(model::MaskShape::Triangle),
+            "parallelogram" => Some(model::MaskShape::Parallelogram),
+            "trapezoid" => Some(model::MaskShape::Trapezoid),
+            "heart" => Some(model::MaskShape::Heart),
+            "star" => Some(model::MaskShape::Star),
+            _ => None,
+        };
+        if shape.is_none() && id != "none" {
+            return;
+        }
+        let mut targets: Vec<String> = self
+            .selection
+            .iter()
+            .filter(|clip_id| self.clip(clip_id).is_some_and(|clip| clip.kind.is_visual()))
+            .cloned()
+            .collect();
+        if targets.is_empty() {
+            let playhead = f64::from(self.playhead);
+            let timeline = self.project().active();
+            let under = timeline
+                .clips
+                .iter()
+                .filter(|clip| {
+                    clip.kind.is_visual()
+                        && clip.start <= playhead
+                        && playhead < clip.start + clip.duration
+                })
+                .min_by_key(|clip| self.row_of(&clip.track_id))
+                .map(|clip| clip.id.clone());
+            if let Some(found) = under {
+                // Selected, so the frame's grips are on the monitor to be
+                // moved and sized as soon as it is on.
+                self.selection = vec![found.clone()];
+                targets.push(found);
+            }
+        }
+        if targets.is_empty() {
+            self.notify(&t("studio.frameNeedsPicture"), true);
+            return;
+        }
+        let mut commands = Vec::new();
+        for clip_id in targets {
+            let Some(clip) = self.clip(&clip_id) else {
+                continue;
+            };
+            if self.locked(&clip.track_id) {
+                continue;
+            }
+            let mask = match shape {
+                None => None,
+                // Chosen twice, it is taken off again.
+                Some(wanted) if clip.mask.is_some_and(|held| held.shape == wanted) => None,
+                Some(wanted) => {
+                    let mut mask = model::ClipMask::of(wanted);
+                    if id == "square" {
+                        // A square frame is square: the rectangle's default
+                        // is a little wider than tall.
+                        mask.width = 0.66;
+                        mask.height = 0.66;
+                    }
+                    Some(mask)
+                }
+            };
+            commands.push(Command::UpdateClip {
+                clip_id,
+                patch: ClipPatch {
+                    mask: Some(mask),
+                    ..ClipPatch::default()
+                },
+            });
+        }
+        match commands.len() {
+            0 => {}
+            1 => {
+                self.apply(commands.remove(0));
+            }
+            _ => {
+                self.apply(Command::Batch { commands });
+            }
+        }
+    }
+
     pub fn place_at_playhead(&mut self, payload: &str) {
         let Some(plan) = self.incoming(payload) else {
             return;
@@ -5019,9 +5200,10 @@ impl Studio {
         let already = self.selection.iter().any(|held| held == id);
         self.selection = if additive {
             if already {
+                let mates = self.group_mates(id);
                 self.selection
                     .iter()
-                    .filter(|held| held.as_str() != id)
+                    .filter(|held| !mates.contains(held))
                     .cloned()
                     .collect()
             } else {
@@ -5034,6 +5216,10 @@ impl Studio {
         } else {
             vec![id.to_owned()]
         };
+        // A grouped clip is its whole group: pressed, it brings the rest.
+        if edge < 0 {
+            self.expand_groups();
+        }
 
         self.begin_echo();
         if edge >= 0 && self.selection.len() <= 1 {
@@ -5172,17 +5358,30 @@ impl Studio {
                     // out of a file that has none before the in-point.
                     let wanted = self.snapped(start + seconds, threshold, &id);
                     let limit = start + duration - MIN_DURATION;
-                    let at = wanted.clamp(
-                        (start - source_start / speed.max(0.01))
-                            .max(floor)
-                            .min(limit),
-                        limit,
-                    );
+                    // A title, a shape or a layer has no file behind it, so
+                    // its head is stopped only by the lane.
+                    let generated = self.clip(&id).is_some_and(|clip| {
+                        matches!(
+                            clip.kind,
+                            model::ClipKind::Text
+                                | model::ClipKind::Shape
+                                | model::ClipKind::Layer
+                                | model::ClipKind::SoundLayer
+                        )
+                    });
+                    let reach = if generated {
+                        f32::NEG_INFINITY
+                    } else {
+                        start - source_start / speed.max(0.01)
+                    };
+                    let at = wanted.clamp(reach.max(floor).min(limit), limit);
                     let delta = at - start;
                     if let Some(clip) = self.echo_clip_mut(&id) {
                         clip.start = f64::from(at);
                         clip.duration = f64::from(duration - delta);
-                        clip.source_start = f64::from(source_start + delta * speed);
+                        if !generated {
+                            clip.source_start = f64::from(source_start + delta * speed);
+                        }
                     }
                     // Trim follow: the playhead on the new first frame.
                     if self.prefs.trim_follow {
@@ -5228,6 +5427,7 @@ impl Studio {
             | Gesture::StageScale { .. }
             | Gesture::StageRotate { .. }
             | Gesture::StageStretch { .. }
+            | Gesture::StageSide { .. }
             | Gesture::TextWidth { .. }
             | Gesture::TextHeight { .. }
             | Gesture::StageMask { .. }
@@ -5326,6 +5526,7 @@ impl Studio {
             | Gesture::StageScale { .. }
             | Gesture::StageRotate { .. }
             | Gesture::StageStretch { .. }
+            | Gesture::StageSide { .. }
             | Gesture::TextWidth { .. }
             | Gesture::TextHeight { .. }
             | Gesture::StageMask { .. }
@@ -5420,6 +5621,14 @@ impl Studio {
             };
             if let Some(original) = original {
                 crate::batch_volume::set_level(clip, &original, value, at);
+                continue;
+            }
+            // A shape's outline width is its own, and a shape has no title
+            // style to grow one for.
+            if clip.kind == model::ClipKind::Shape && matches!(field, ClipField::StrokeWidth) {
+                clip.shape
+                    .get_or_insert_with(model::ShapeStyle::default)
+                    .stroke_width = value.clamp(0.0, 0.1);
                 continue;
             }
             let text = clip.text.get_or_insert_with(TextStyle::default);
@@ -5828,6 +6037,17 @@ impl Studio {
             let Some(clip) = self.echo_clip_mut(&id) else {
                 continue;
             };
+            // A shape's fill and outline are its own colours, each with an
+            // alpha of its own.
+            if clip.kind == model::ClipKind::Shape {
+                let shape = clip.shape.get_or_insert_with(model::ShapeStyle::default);
+                match field {
+                    ClipTextField::Color => shape.fill = hex_rgba(value),
+                    ClipTextField::StrokeColor => shape.stroke = hex_rgba(value),
+                    _ => {}
+                }
+                continue;
+            }
             if clip.kind != model::ClipKind::Text {
                 continue;
             }
@@ -5839,6 +6059,69 @@ impl Studio {
                 _ => {}
             }
         }
+    }
+
+    // ── the dropper ──
+    //
+    // A colour field asked for a colour from the monitor: the next click on
+    // its picture is the colour, and it goes to the field that asked through
+    // the same path a picker's change takes.
+
+    pub fn eyedrop_start(&mut self, field: i32) {
+        self.flush_commit();
+        self.eyedrop = Some(field);
+    }
+
+    pub fn eyedrop_cancel(&mut self) {
+        self.eyedrop = None;
+    }
+
+    /// The colour at a fraction of the frame on the monitor.
+    pub fn eyedrop_frame(&mut self, x: f32, y: f32) {
+        let Some(pixels) = self.monitor.image.to_rgba8() else {
+            self.eyedrop_cancel();
+            return;
+        };
+        let colour = sample_pixel(&pixels, x, y);
+        self.eyedrop_apply(colour);
+    }
+
+    /// Gives the field that asked the colour, keeping the alpha it had where
+    /// the alpha is a dial of its own, and lands it as one edit.
+    fn eyedrop_apply(&mut self, colour: slint::Color) {
+        let Some(field) = self.eyedrop.take() else {
+            return;
+        };
+        let (field, keeps_alpha) = match field {
+            0 => (ClipTextField::Color, true),
+            1 => (ClipTextField::StrokeColor, true),
+            _ => (ClipTextField::Background, true),
+        };
+        let held = self
+            .sole_selection()
+            .and_then(|id| self.clip(&id).cloned())
+            .map(|clip| match (&clip.shape, &clip.text) {
+                (Some(shape), _) => {
+                    let paint = match field {
+                        ClipTextField::StrokeColor => &shape.stroke,
+                        _ => &shape.fill,
+                    };
+                    colour_of(paint).alpha()
+                }
+                (None, Some(text)) => match field {
+                    ClipTextField::StrokeColor => colour_of(&text.stroke_color).alpha(),
+                    ClipTextField::Background => colour_of(&text.background).alpha(),
+                    _ => 255,
+                },
+                _ => 255,
+            })
+            .unwrap_or(255);
+        // A colour taken down to nothing has nothing to keep: the pick is
+        // taken to mean it should show.
+        let alpha = if keeps_alpha && held > 0 { held } else { 255 };
+        let picked = slint::Color::from_argb_u8(alpha, colour.red(), colour.green(), colour.blue());
+        self.clip_set_colour(field, picked);
+        self.clip_commit();
     }
 
     // ── styled words ──
@@ -6306,6 +6589,7 @@ impl Studio {
             }
         } else if !already {
             self.selection = vec![id.clone()];
+            self.expand_groups();
         }
         if !self.selection.iter().any(|held| held == &id) {
             self.gesture = Gesture::None;
@@ -6419,6 +6703,37 @@ impl Studio {
                 clip: id.to_owned(),
                 centre,
                 rotation: clip.rotation,
+            }
+        } else if clip.kind == model::ClipKind::Shape && (0..=8).contains(&grip) {
+            // A sticker pulls out of shape from the side that was taken: see
+            // `Gesture::StageSide`. Corners 0 to 3 run clockwise from the top
+            // left; 5 top, 6 right, 7 bottom, 8 left.
+            let direction = match grip {
+                0 => (-1.0, -1.0),
+                1 => (1.0, -1.0),
+                2 => (1.0, 1.0),
+                3 => (-1.0, 1.0),
+                5 => (0.0, -1.0),
+                6 => (1.0, 0.0),
+                7 => (0.0, 1.0),
+                _ => (-1.0, 0.0),
+            };
+            let at = place_in(&clip, self.playhead);
+            Gesture::StageSide {
+                clip: id.to_owned(),
+                grip: direction,
+                centre,
+                half: (
+                    footprint.w * f64::from(width) / 2.0,
+                    footprint.h * f64::from(height) / 2.0,
+                ),
+                rotation: footprint.rotation,
+                stretch: (clip.stretch_x, clip.stretch_y),
+                scale: shown(&clip, model::KeyProperty::Scale, at),
+                offset: (
+                    shown(&clip, model::KeyProperty::OffsetX, at),
+                    shown(&clip, model::KeyProperty::OffsetY, at),
+                ),
             }
         } else if grip >= 5 {
             // 5 top, 6 right, 7 bottom, 8 left: the pointer's offset from
@@ -6654,6 +6969,85 @@ impl Studio {
                     }
                 }
             }
+            Gesture::StageSide {
+                clip,
+                grip,
+                centre,
+                half,
+                rotation,
+                stretch,
+                scale,
+                offset,
+            } => {
+                let (sin, cos) = rotation.to_radians().sin_cos();
+                let dx = x * f64::from(width) - centre.0;
+                let dy = y * f64::from(height) - centre.1;
+                // The pointer in the box's own frame, from its centre.
+                let (pu, pv) = (dx * cos + dy * sin, -dx * sin + dy * cos);
+                let (frame_w, frame_h) = (f64::from(width), f64::from(height));
+                let floor = 4.0;
+                let playhead = self.playhead;
+                if snap {
+                    // Held with shift: the uniform pull, about the centre.
+                    let corner = grip.0 != 0.0 && grip.1 != 0.0;
+                    let mut next_scale = *scale;
+                    let mut next_stretch = *stretch;
+                    if corner {
+                        let from = (half.0 * grip.0).hypot(half.1 * grip.1).max(1.0);
+                        next_scale = (scale * pu.hypot(pv) / from).clamp(0.05, 8.0);
+                    } else if grip.0 != 0.0 {
+                        next_stretch.0 = (stretch.0 * pu.abs() / half.0.max(1.0)).clamp(0.1, 10.0);
+                    } else {
+                        next_stretch.1 = (stretch.1 * pv.abs() / half.1.max(1.0)).clamp(0.1, 10.0);
+                    }
+                    if let Some(clip) = self.echo_clip_mut(clip) {
+                        let at = place_in(clip, playhead);
+                        clip.stretch_x = next_stretch.0;
+                        clip.stretch_y = next_stretch.1;
+                        write_keyable(clip, model::KeyProperty::Scale, next_scale, at);
+                        write_keyable(clip, model::KeyProperty::OffsetX, offset.0, at);
+                        write_keyable(clip, model::KeyProperty::OffsetY, offset.1, at);
+                    }
+                } else {
+                    // The side taken follows the pointer; the opposite side
+                    // stays. On an axis the grip does not touch, nothing moves.
+                    let pull = |direction: f64, reach: f64, pointer: f64| -> (f64, f64) {
+                        if direction == 0.0 {
+                            return (2.0 * reach, 0.0);
+                        }
+                        let fixed = -direction * reach;
+                        let size = (direction * (pointer - fixed)).max(floor);
+                        (size, fixed + direction * size / 2.0)
+                    };
+                    let (size_u, mid_u) = pull(grip.0, half.0, pu);
+                    let (size_v, mid_v) = pull(grip.1, half.1, pv);
+                    let k = (
+                        (stretch.0 * size_u / (2.0 * half.0).max(1.0)).clamp(0.1, 10.0),
+                        (stretch.1 * size_v / (2.0 * half.1).max(1.0)).clamp(0.1, 10.0),
+                    );
+                    // The new centre, turned back out of the box's frame into
+                    // the frame's, as a move of the picture.
+                    let (shift_x, shift_y) = (mid_u * cos - mid_v * sin, mid_u * sin + mid_v * cos);
+                    if let Some(clip) = self.echo_clip_mut(clip) {
+                        let at = place_in(clip, playhead);
+                        clip.stretch_x = k.0;
+                        clip.stretch_y = k.1;
+                        write_keyable(clip, model::KeyProperty::Scale, *scale, at);
+                        write_keyable(
+                            clip,
+                            model::KeyProperty::OffsetX,
+                            (offset.0 + shift_x / frame_w).clamp(-1.0, 1.0),
+                            at,
+                        );
+                        write_keyable(
+                            clip,
+                            model::KeyProperty::OffsetY,
+                            (offset.1 + shift_y / frame_h).clamp(-1.0, 1.0),
+                            at,
+                        );
+                    }
+                }
+            }
             Gesture::TextWidth {
                 clip,
                 centre,
@@ -6763,6 +7157,7 @@ impl Studio {
             Gesture::StageScale { clip, .. }
             | Gesture::StageRotate { clip, .. }
             | Gesture::StageStretch { clip, .. }
+            | Gesture::StageSide { clip, .. }
             | Gesture::StageMask { clip, .. }
             | Gesture::TextWidth { clip, .. } => vec![clip],
             Gesture::Paint {
@@ -9450,6 +9845,13 @@ impl Studio {
         self.toast.token += 1;
         self.toast.message = message.into();
         self.toast.failed = failed;
+        self.toast.top = false;
+    }
+
+    /// A notice centred under the title strip.
+    pub fn notify_top(&mut self, message: &str, failed: bool) {
+        self.notify(message, failed);
+        self.toast.top = true;
     }
 
     // ── publishing ──
@@ -9482,7 +9884,47 @@ impl Studio {
         self.publish_dock(app, models);
     }
 
-    pub fn publish_dock(&self, _app: &App, models: &Models) {
+    /// Opens a shut panel or shuts an open one, remembers the choice, and
+    /// lays the wide dock out again with each panel in its place.
+    pub fn toggle_panel(&mut self, kind: PaneKind) {
+        self.panels.flip(kind);
+        self.rebuild_panels();
+    }
+
+    /// Opens a panel if it is shut.
+    pub fn show_panel(&mut self, kind: PaneKind) {
+        self.panels.show(kind);
+        self.rebuild_panels();
+    }
+
+    fn rebuild_panels(&mut self) {
+        self.prefs.panels = Some(self.panels.names());
+        self.prefs.save(&self.host.dirs);
+        let wide = if self.compact {
+            &self.dock_aside
+        } else {
+            &self.dock
+        };
+        self.ratios = self.ratios.read(wide);
+        let dock = build_dock(&self.panels, &self.ratios);
+        if self.compact {
+            self.dock_aside = dock;
+        } else {
+            self.dock = dock;
+        }
+    }
+
+    pub fn publish_dock(&self, app: &App, models: &Models) {
+        let dropper = app.global::<Eyedropper>();
+        dropper.set_active(self.eyedrop.is_some());
+        let editor = app.global::<Editor>();
+        // Kept in one model and synced, so a publish that changes nothing
+        // tells the window nothing.
+        if editor.get_panels().row_count() == 0 {
+            editor.set_panels(slint::ModelRc::from(models.panels.clone()));
+        }
+        sync(&models.panels, self.panels.flags().to_vec());
+        app.global::<crate::ui::Panes>().set_compact(self.compact);
         let out = self.dock_layout();
         sync(&models.seats, out.seats);
         sync(&models.dividers, out.dividers);
@@ -9593,6 +10035,29 @@ impl Studio {
                 .collect(),
         );
 
+        // The lanes a resize keeps in view: those of the selected clips, or
+        // of every clip when none is selected - see `TimelinePane::recentre`.
+        let heights = self.lane_heights();
+        let selected = !self.selection.is_empty();
+        let (mut first, mut last) = (usize::MAX, 0);
+        for clip in &timeline.clips {
+            if selected && !self.selection.iter().any(|id| id == &clip.id) {
+                continue;
+            }
+            let row = self.row_of(&clip.track_id).max(0) as usize;
+            first = first.min(row);
+            last = last.max(row);
+        }
+        let (focus_top, focus_bottom) = if first == usize::MAX || last >= heights.len() {
+            (0.0, 0.0)
+        } else {
+            let above: f32 = heights[..first].iter().sum();
+            let through: f32 = heights[..=last].iter().sum();
+            (above, through)
+        };
+        editor.set_focus_top(focus_top);
+        editor.set_focus_bottom(focus_bottom);
+
         // Only the clips near the view: what the lanes show plus a screen
         // either side; see `TimelinePane::published_span`.
         let span = self.lanes.published_span();
@@ -9627,6 +10092,7 @@ impl Studio {
                             .selected_transition()
                             .is_some_and(|picked| picked.id == clip.id),
                         fx: clip.video_effects.iter().any(|effect| effect.enabled),
+                        framed: clip.mask.is_some(),
                         transition_duration: clip
                             .transition_in
                             .as_ref()
@@ -9683,6 +10149,7 @@ impl Studio {
         editor.set_preview_duration(self.duration());
         editor.set_playhead_free(!self.prefs.playhead_stops_at_end);
         editor.set_playing(self.playing);
+        editor.set_looping(self.prefs.loop_playback);
         self.publish_frame(app);
         sync(&models.stage, self.stage_items());
         sync(&models.guides, self.stage_guides.clone());
@@ -11059,6 +11526,15 @@ impl Studio {
             .as_deref()
             .map_or_else(|| colour_of(&text.color), colour_of);
         let stroke = colour_of(&text.stroke_color);
+        // A shape's paint is read where a title's colours are: the same
+        // fields, the same picker.
+        let shape = clip
+            .shape
+            .as_ref()
+            .filter(|_| clip.kind == model::ClipKind::Shape);
+        let fill = shape.map_or(fill, |shape| colour_of(&shape.fill));
+        let stroke = shape.map_or(stroke, |shape| colour_of(&shape.stroke));
+        let stroke_width = shape.map_or(text.stroke_width, |shape| shape.stroke_width);
         let plate = colour_of(&text.background);
         let analysis = clip.cutout.as_ref().and_then(|cutout| {
             self.cutout_jobs
@@ -11159,7 +11635,7 @@ impl Studio {
             fill_hex: hex_of(fill).into(),
             align: align_of(text.align),
             text_opacity: text.opacity as f32,
-            stroke_width: text.stroke_width as f32,
+            stroke_width: stroke_width as f32,
             stroke,
             stroke_hex: hex_of(stroke).into(),
             stroke_opacity: f32::from(stroke.alpha()) / 255.0,
@@ -11581,6 +12057,7 @@ impl Studio {
             token: self.toast.token,
             message: self.toast.message.as_str().into(),
             failed: self.toast.failed,
+            top: self.toast.top,
         });
         app.set_start(self.start.data());
         app.set_recents_total(self.recents.len() as i32);
@@ -11714,6 +12191,11 @@ impl Studio {
         editor.set_project_folder(folder.clone());
         editor.set_timeline_name(timeline_name.clone());
         editor.set_project_output(format!("{width} × {height}").into());
+        editor.set_project_live(crate::panes::project::ProjectPane::live_data(self));
+        let canvas = self.timeline_canvas();
+        editor.set_project_canvas(slint::Color::from_argb_u8(
+            canvas[3], canvas[0], canvas[1], canvas[2],
+        ));
         editor.set_project_rate(format!("{:.2} fps", self.frame_rate()).into());
         editor.set_project_duration(frames_timecode(self.duration(), self.frame_rate()).into());
         editor.set_count_media(self.project().media.len() as i32);
@@ -11952,6 +12434,36 @@ impl Studio {
                 "",
                 !locked
                     && (clip.kind == model::ClipKind::Video || clip.kind == model::ClipKind::Image),
+            ),
+            rule(),
+            // Straight out to a file: the clip, or the selection, or a
+            // whole group, as one render.
+            action(
+                "export-clips",
+                if self.selection.len() > 1 && self.selection.iter().any(|held| held == &clip.id) {
+                    tf("studio.exportClips", &[&self.selection.len()])
+                } else if !clip.group.is_empty() {
+                    t("studio.exportGroup")
+                } else {
+                    t("studio.exportClip")
+                },
+                Glyph::Export,
+                "",
+                true,
+            ),
+            action(
+                "group",
+                t("studio.groupClips"),
+                Glyph::Link,
+                "",
+                !locked && self.selection.len() > 1,
+            ),
+            action(
+                "ungroup",
+                t("studio.ungroupClips"),
+                Glyph::Unlock,
+                "",
+                !locked && !clip.group.is_empty(),
             ),
             rule(),
         ];
@@ -12254,6 +12766,13 @@ impl Studio {
                     !self.timeline().clips.is_empty(),
                 ),
                 row(
+                    "export-clips",
+                    t("studio.exportClip"),
+                    Glyph::Export,
+                    &keymap::label(&self.prefs, "export-clips"),
+                    selected > 0,
+                ),
+                row(
                     "template",
                     t("studio.saveAsTemplate"),
                     Glyph::Slot,
@@ -12358,6 +12877,23 @@ impl Studio {
                     checked: false,
                 },
                 rule(),
+                row(
+                    "group",
+                    t("studio.groupClips"),
+                    Glyph::Link,
+                    &keymap::label(&self.prefs, "group"),
+                    selected > 1,
+                ),
+                row(
+                    "ungroup",
+                    t("studio.ungroupClips"),
+                    Glyph::Unlock,
+                    &keymap::label(&self.prefs, "ungroup"),
+                    self.selection
+                        .iter()
+                        .any(|id| self.clip(id).is_some_and(|c| !c.group.is_empty())),
+                ),
+                rule(),
                 MenuItemData {
                     id: "snap".into(),
                     label: t("common.snapToEdges").into(),
@@ -12438,6 +12974,82 @@ impl Studio {
                     t("shortcuts.nextEdit"),
                     Glyph::None,
                     &keymap::label(&self.prefs, "next-edit"),
+                    true,
+                ),
+                rule(),
+                MenuItemData {
+                    id: "loop".into(),
+                    label: t("previewPane.loop").into(),
+                    kind: MenuRow::Action,
+                    glyph: Glyph::Repeat,
+                    shortcut: keymap::label(&self.prefs, "loop").into(),
+                    enabled: true,
+                    danger: false,
+                    checkable: true,
+                    checked: self.prefs.loop_playback,
+                },
+                rule(),
+                MenuItemData {
+                    id: "panel-media".into(),
+                    label: t("paneSwitcher.library").into(),
+                    kind: MenuRow::Action,
+                    glyph: Glyph::None,
+                    shortcut: keymap::label(&self.prefs, "panel-media").into(),
+                    enabled: true,
+                    danger: false,
+                    checkable: true,
+                    checked: self.panels.shows(PaneKind::Media),
+                },
+                MenuItemData {
+                    id: "panel-preview".into(),
+                    label: t("common.preview").into(),
+                    kind: MenuRow::Action,
+                    glyph: Glyph::None,
+                    shortcut: keymap::label(&self.prefs, "panel-preview").into(),
+                    enabled: true,
+                    danger: false,
+                    checkable: true,
+                    checked: self.panels.shows(PaneKind::Preview),
+                },
+                MenuItemData {
+                    id: "panel-timeline".into(),
+                    label: t("paneSwitcher.timeline").into(),
+                    kind: MenuRow::Action,
+                    glyph: Glyph::None,
+                    shortcut: keymap::label(&self.prefs, "panel-timeline").into(),
+                    enabled: true,
+                    danger: false,
+                    checkable: true,
+                    checked: self.panels.shows(PaneKind::Timeline),
+                },
+                MenuItemData {
+                    id: "panel-keyframes".into(),
+                    label: t("common.keyframes").into(),
+                    kind: MenuRow::Action,
+                    glyph: Glyph::None,
+                    shortcut: keymap::label(&self.prefs, "panel-keyframes").into(),
+                    enabled: true,
+                    danger: false,
+                    checkable: true,
+                    checked: self.panels.shows(PaneKind::Keyframes),
+                },
+                MenuItemData {
+                    id: "panel-inspector".into(),
+                    label: t("paneSwitcher.inspector").into(),
+                    kind: MenuRow::Action,
+                    glyph: Glyph::None,
+                    shortcut: keymap::label(&self.prefs, "panel-inspector").into(),
+                    enabled: true,
+                    danger: false,
+                    checkable: true,
+                    checked: self.panels.shows(PaneKind::Inspector),
+                },
+                rule(),
+                row(
+                    "debug",
+                    t("titleBar.debug"),
+                    Glyph::Bug,
+                    &keymap::label(&self.prefs, "debug"),
                     true,
                 ),
             ],
@@ -12635,6 +13247,27 @@ impl Studio {
             "delete-left" => self.delete_to_playhead(PlayheadSide::Left),
             "delete-right" => self.delete_to_playhead(PlayheadSide::Right),
             "select-all" => self.select_all(),
+            "group" => self.group_selection(),
+            "ungroup" => self.ungroup_selection(),
+            "loop" => self.loop_toggle(),
+            "panel-media" => self.toggle_panel(PaneKind::Media),
+            "panel-preview" => self.toggle_panel(PaneKind::Preview),
+            "panel-timeline" => self.toggle_panel(PaneKind::Timeline),
+            "panel-keyframes" => self.toggle_panel(PaneKind::Keyframes),
+            "panel-inspector" => self.toggle_panel(PaneKind::Inspector),
+            // The selected clips straight out to a file; a group in the
+            // selection is in it whole.
+            "export-clips" => {
+                if self.selection.is_empty() {
+                    self.notify(&t("studio.exportNeedsClips"), true);
+                } else {
+                    self.menu_target = None;
+                    let ids = self.selection.clone();
+                    self.handle(crate::panes::Msg::Export(
+                        crate::panes::export::ExportMsg::OpenSelection(ids),
+                    ));
+                }
+            }
             // The phone's way out of the clip tools: nothing selected, the
             // way a press on an empty lane leaves it.
             "deselect" => {
@@ -12744,6 +13377,115 @@ impl Studio {
         self.selection = sounds;
     }
 
+    /// Every clip in `id`'s group, itself included; just `id` when it is
+    /// not grouped.
+    ///
+    /// A clip's `group` is its layers of grouping, innermost first and
+    /// outermost last, joined by `/`: "g1/g3" was grouped as g1 and then
+    /// that group, with others, as g3. Selection works at the outermost.
+    pub fn group_mates(&self, id: &str) -> Vec<String> {
+        let Some(clip) = self.clip(id) else {
+            return Vec::new();
+        };
+        if clip.group.is_empty() {
+            return vec![id.to_owned()];
+        }
+        let outer = outer_group(&clip.group);
+        self.timeline()
+            .clips
+            .iter()
+            .filter(|other| !other.group.is_empty() && outer_group(&other.group) == outer)
+            .map(|other| other.id.clone())
+            .collect()
+    }
+
+    /// The selection widened to whole groups, on lanes that can be moved.
+    pub fn expand_groups(&mut self) {
+        let mut next = self.selection.clone();
+        for id in self.selection.clone() {
+            for mate in self.group_mates(&id) {
+                let free = self.clip(&mate).is_some_and(|c| !self.locked(&c.track_id));
+                if free && !next.contains(&mate) {
+                    next.push(mate);
+                }
+            }
+        }
+        self.selection = next;
+    }
+
+    /// The selected clips become one group, whatever lanes and media.
+    pub fn group_selection(&mut self) {
+        let ids: Vec<String> = self
+            .selection
+            .iter()
+            .filter(|id| self.clip(id).is_some_and(|c| !self.locked(&c.track_id)))
+            .cloned()
+            .collect();
+        if ids.len() < 2 {
+            self.notify(&t("studio.groupNeedsTwo"), true);
+            return;
+        }
+        let next = self
+            .timeline()
+            .clips
+            .iter()
+            .flat_map(|c| c.group.split('/'))
+            .filter_map(|layer| layer.strip_prefix('g')?.parse::<u32>().ok())
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let new = format!("g{next}");
+        // A new outer layer on every clip, over whatever groups it was in.
+        let commands = ids
+            .into_iter()
+            .filter_map(|clip_id| {
+                let old = self.clip(&clip_id)?.group.clone();
+                let group = if old.is_empty() {
+                    new.clone()
+                } else {
+                    format!("{old}/{new}")
+                };
+                Some(Command::UpdateClip {
+                    clip_id,
+                    patch: ClipPatch {
+                        group: Some(group),
+                        ..Default::default()
+                    },
+                })
+            })
+            .collect();
+        self.apply(Command::Batch { commands });
+        self.notify_top(&t("studio.grouped"), false);
+    }
+
+    /// The outermost group the selection is in comes apart; groups inside
+    /// it stay as they were, so grouping and ungrouping undo each other
+    /// layer by layer.
+    pub fn ungroup_selection(&mut self) {
+        let commands: Vec<Command> = self
+            .selection
+            .iter()
+            .filter_map(|clip_id| {
+                let group = &self.clip(clip_id)?.group;
+                if group.is_empty() {
+                    return None;
+                }
+                let rest = group.rsplit_once('/').map_or("", |(inner, _)| inner);
+                Some(Command::UpdateClip {
+                    clip_id: clip_id.clone(),
+                    patch: ClipPatch {
+                        group: Some(rest.to_owned()),
+                        ..Default::default()
+                    },
+                })
+            })
+            .collect();
+        if !commands.is_empty() {
+            self.apply(Command::Batch { commands });
+            self.notify_top(&t("studio.ungrouped"), false);
+        }
+    }
+
     pub fn clip_action(&mut self, id: &str, action: &str) {
         log::info!("clip menu: {action} on {id}");
         let Some(clip) = self.clip(id).cloned() else {
@@ -12795,6 +13537,21 @@ impl Studio {
                 self.inspector_jump = (self.inspector_jump.0 + 1, "Video", "Enhance");
             }
             "export-audio" => self.export_clip_audio(id),
+            "group" => self.group_selection(),
+            "ungroup" => self.ungroup_selection(),
+            // The clip right-clicked, or the selection it is part of; a
+            // group is in the selection whole, so it goes out as one file.
+            "export-clips" => {
+                let ids =
+                    if self.selection.len() > 1 && self.selection.iter().any(|held| held == id) {
+                        self.selection.clone()
+                    } else {
+                        self.group_mates(id)
+                    };
+                self.handle(crate::panes::Msg::Export(
+                    crate::panes::export::ExportMsg::OpenSelection(ids),
+                ));
+            }
             "detach" => self.detach_audio(&clip),
             "reattach" => {
                 self.apply(Command::ReattachAudio {
@@ -13529,4 +14286,21 @@ mod tests {
             );
         }
     }
+}
+
+/// The pixel at a fraction of an image, clamped to its edges.
+fn sample_pixel(
+    pixels: &slint::SharedPixelBuffer<slint::Rgba8Pixel>,
+    x: f32,
+    y: f32,
+) -> slint::Color {
+    let (width, height) = (pixels.width().max(1), pixels.height().max(1));
+    let column = ((x.clamp(0.0, 1.0) * width as f32) as u32).min(width - 1);
+    let row = ((y.clamp(0.0, 1.0) * height as f32) as u32).min(height - 1);
+    pixels
+        .as_slice()
+        .get((row * width + column) as usize)
+        .map_or(slint::Color::from_rgb_u8(0, 0, 0), |pixel| {
+            slint::Color::from_rgb_u8(pixel.r, pixel.g, pixel.b)
+        })
 }

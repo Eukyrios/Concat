@@ -72,6 +72,9 @@ pub struct MeterFeed {
     pub clipped: bool,
     /// The window is a phone's, whose shell has no meters to feed.
     pub phone: bool,
+    /// The bars hold a reading taken at a parked playhead; the timer leaves
+    /// them be until something plays again.
+    parked: bool,
     timer: slint::Timer,
 }
 
@@ -84,6 +87,31 @@ impl Studio {
 
     fn rolling(&self) -> bool {
         self.playing || self.source.as_ref().is_some_and(|source| source.playing)
+    }
+
+    /// The playhead was moved while nothing plays - a click on the ruler, a
+    /// scrub, a frame step: the meters read the sound under it, so the
+    /// level can be found without playing. Nothing happens while it plays
+    /// (the timer feeds them then) or when nobody can see the meters.
+    pub fn show_level_at_playhead(&mut self) {
+        self.show_level_at(f64::from(self.playhead));
+    }
+
+    /// The same for any instant of what the speakers carry: the timeline's
+    /// playhead, or the time a source opened from the media bin stands at.
+    pub fn show_level_at(&mut self, position: f64) {
+        if self.rolling() || !self.meters_shown() {
+            return;
+        }
+        let (left, right) = self.host.playback.level_at(position);
+        self.meters.set_static(left, right);
+        // This runs inside the studio's own borrow, which the shell needs
+        // to reach the window: publish once that borrow has ended.
+        slint::Timer::single_shot(std::time::Duration::ZERO, || {
+            crate::host::Shell::with(|shell, app| {
+                shell.studio.borrow().meters.publish(&app);
+            });
+        });
     }
 
     /// Something started playing, or the meters came into view while it
@@ -103,6 +131,14 @@ impl Studio {
                     let rolling = studio.rolling();
                     let shown = studio.meters_shown();
                     let (left, right) = studio.host.playback.take_levels();
+                    if rolling {
+                        studio.meters.parked = false;
+                    } else if studio.meters.parked && shown {
+                        // Paused on a measured level: the bars stay where the
+                        // reading put them, not falling to the floor.
+                        studio.meters.timer.stop();
+                        return;
+                    }
                     let feed = &mut studio.meters;
                     if !shown {
                         // Put away mid-play: the bars drop to the floor now,
@@ -127,6 +163,20 @@ impl Studio {
 }
 
 impl MeterFeed {
+    /// Parks the bars at a measured level and holds them there: the
+    /// reading for a playhead that is not playing. No ballistics - a
+    /// parked playhead is a fact about one instant, not a moment passing -
+    /// and no clip latch, which belongs to what was actually played.
+    fn set_static(&mut self, left: f32, right: f32) {
+        for (side, level) in [(&mut self.left, left), (&mut self.right, right)] {
+            let now = scale(level);
+            side.shown = now;
+            side.held = now;
+            side.held_for = 0.0;
+        }
+        self.parked = true;
+    }
+
     /// The clip light was clicked.
     pub fn clear_clip(&mut self, app: &crate::ui::App) {
         self.clipped = false;

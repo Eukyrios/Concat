@@ -226,7 +226,10 @@ impl Studio {
         if source.playing {
             source.playing = false;
             source.timer.stop();
+            let time = source.time;
             self.host.playback.pause();
+            // Stopped on the level under the source's own playhead.
+            self.show_level_at(time);
             return;
         }
         if source.time >= source.duration - 1e-3 {
@@ -272,6 +275,8 @@ impl Studio {
             self.host.playback.play(time);
         } else {
             self.host.playback.seek(time);
+            // Clicked around a paused source: its level shows on the meters.
+            self.show_level_at(time);
         }
         self.request_preview();
     }

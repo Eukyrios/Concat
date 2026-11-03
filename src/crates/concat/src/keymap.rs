@@ -60,8 +60,16 @@ pub const ACTIONS: &[Action] = &[
         defaults: &["ctrl+e"],
     },
     Action {
+        id: "export-clips",
+        defaults: &["ctrl+shift+e"],
+    },
+    Action {
         id: "settings",
         defaults: &["ctrl+,"],
+    },
+    Action {
+        id: "debug",
+        defaults: &["ctrl+shift+d"],
     },
     // Editing.
     Action {
@@ -88,6 +96,15 @@ pub const ACTIONS: &[Action] = &[
     Action {
         id: "duplicate",
         defaults: &["ctrl+d"],
+    },
+    // Clips that move, cut and export as one.
+    Action {
+        id: "group",
+        defaults: &["ctrl+g"],
+    },
+    Action {
+        id: "ungroup",
+        defaults: &["ctrl+shift+g"],
     },
     Action {
         id: "split",
@@ -150,10 +167,36 @@ pub const ACTIONS: &[Action] = &[
         id: "zoom-out",
         defaults: &["ctrl+-"],
     },
+    // The panels, each switched on and off in its own place.
+    Action {
+        id: "panel-media",
+        defaults: &["ctrl+1"],
+    },
+    Action {
+        id: "panel-preview",
+        defaults: &["ctrl+2"],
+    },
+    Action {
+        id: "panel-timeline",
+        defaults: &["ctrl+3"],
+    },
+    Action {
+        id: "panel-keyframes",
+        defaults: &["ctrl+4"],
+    },
+    Action {
+        id: "panel-inspector",
+        defaults: &["ctrl+5"],
+    },
     // The playhead.
     Action {
         id: "play",
         defaults: &["space"],
+    },
+    // Play again from the start at the end: a Short's join, judged.
+    Action {
+        id: "loop",
+        defaults: &["ctrl+l"],
     },
     Action {
         id: "start",
@@ -201,6 +244,16 @@ pub fn name(id: &str) -> String {
         "import" => i18n::t("studio.importMedia"),
         "export" => i18n::t("studio.export"),
         "settings" => i18n::t("common.settings"),
+        "export-clips" => i18n::t("shortcuts.exportClips"),
+        "debug" => i18n::t("titleBar.debug"),
+        "group" => i18n::t("studio.groupClips"),
+        "ungroup" => i18n::t("studio.ungroupClips"),
+        "loop" => i18n::t("previewPane.loop"),
+        "panel-media" => i18n::t("paneSwitcher.library"),
+        "panel-preview" => i18n::t("common.preview"),
+        "panel-timeline" => i18n::t("paneSwitcher.timeline"),
+        "panel-keyframes" => i18n::t("common.keyframes"),
+        "panel-inspector" => i18n::t("paneSwitcher.inspector"),
         "undo" => i18n::t("studio.undo"),
         "redo" => i18n::t("studio.redo"),
         "select-all" => i18n::t("shortcuts.selectAll"),

@@ -22,14 +22,10 @@ use slint::{ModelRc, SharedString, VecModel};
 // object opaque and leaves building and reading one to the host language.
 use slint::private_unstable_api::re_exports::DataTransfer;
 
-// Everything the .slint tree exports, in a module of its own: the workspace
-// lints every public item for documentation, and the generated accessors are
-// thousands of public items nobody documents. The allow covers them and
-// nothing in this file.
-#[allow(missing_docs)]
-mod ui {
-    slint::include_modules!();
-}
+// Everything the .slint tree exports. It is compiled in the concat-ui crate,
+// not here, so an edit to this crate's Rust never recompiles it. Named `ui`
+// so that every `crate::ui::...` path in the window's code reads as before.
+use concat_ui as ui;
 
 mod batch_volume;
 mod chips;
@@ -494,6 +490,16 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
             .join("\n")
             .into(),
     );
+    // Settings > About's Debug section: the end of this run's log, read
+    // again whenever the section opens or Refresh is pressed.
+    {
+        let weak = app.as_weak();
+        app.on_refresh_log(move || {
+            if let Some(app) = weak.upgrade() {
+                app.set_debug_log(read_log_tail().into());
+            }
+        });
+    }
     app.set_system_facts(ModelRc::from(Rc::new(VecModel::from(
         facts
             .into_iter()
@@ -811,14 +817,14 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
         state.dock.split_leaf(&onto_path, taken, side);
         state.dock.remove_leaf(&from_path);
     }));
-    editor.on_dock_add(on_dock!(|state, kind: PaneKind| {
-        add_pane(&mut state, kind);
+    editor.on_panel_toggled(on_dock!(|state, kind: PaneKind| {
+        state.toggle_panel(kind);
     }));
     // Not on a phone or in the compact dock: there the two seats are the
-    // monitor and the timeline, and a third would squeeze both.
+    // monitor and the timeline, and the tab would crowd the lanes.
     editor.on_key_mark_opened(on_dock!(|state| {
-        if !state.compact && !state.meters.phone && !state.dock.contains(PaneKind::Keyframes) {
-            add_pane(&mut state, PaneKind::Keyframes);
+        if !state.compact && !state.meters.phone {
+            state.show_panel(PaneKind::Keyframes);
         }
     }));
     editor.on_dock_remove(on_dock!(|state, seat: i32| {
@@ -948,6 +954,10 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
             state.place_at_playhead(&format!("shape:{shape}:{label}"));
         }
     ));
+    // A frame from the Stickers page crops the selected picture to a shape.
+    editor.on_library_add_frame(on_window!(|state, shape: SharedString| {
+        state.apply_frame(shape.as_str());
+    }));
     // A filter is a layer over a span of the timeline; an effect goes on
     // the selected clip's chain, and audio on the sound's.
     editor.on_library_apply_filter(on_window!(
@@ -1218,6 +1228,7 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
                 state.selection = caught;
                 state.transition_selected = None;
             }
+            state.expand_groups();
         }
     ));
 
@@ -1451,6 +1462,19 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     editor.on_play_toggled(on_window!(|state| {
         state.play_toggle();
     }));
+    let dropper = app.global::<Eyedropper>();
+    dropper.on_start(on_window!(|state, field: i32| {
+        state.eyedrop_start(field);
+    }));
+    dropper.on_frame_picked(on_window!(|state, x: f32, y: f32| {
+        state.eyedrop_frame(x, y);
+    }));
+    dropper.on_cancel(on_window!(|state| {
+        state.eyedrop_cancel();
+    }));
+    editor.on_loop_toggled(on_window!(|state| {
+        state.loop_toggle();
+    }));
     app.global::<FontSearch>()
         .on_query_changed(on_window!(|state, text: SharedString| {
             state.font_query = text.to_string();
@@ -1660,6 +1684,7 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
         }
         if !state.selection.iter().any(|held| held == id.as_str()) {
             state.selection = vec![id.to_string()];
+            state.expand_groups();
         }
         state.menu_target = Some(id.to_string());
     }));
@@ -1710,7 +1735,8 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
         .on_release(|| Shell::with(|_, app| app.invoke_blur()));
     editor.on_shortcut(move |action: SharedString| match action.as_str() {
         "import" | "export" | "settings" | "zoom-in" | "zoom-out" | "start" | "end"
-        | "prev-edit" | "next-edit" | "snap" | "magnetic" | "linkage" | "pan" | "preview-axis" => {
+        | "prev-edit" | "next-edit" | "snap" | "magnetic" | "linkage" | "pan" | "preview-axis"
+        | "debug" => {
             Shell::with(|_, app| app.invoke_app_menu_selected(action.clone()));
         }
         _ => Shell::with(|shell, app| {
@@ -1833,7 +1859,7 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
                 // apart — the same door on_shortcut keeps open.
                 "save" | "undo" | "redo" | "import" | "export" | "settings" | "zoom-in"
                 | "zoom-out" | "start" | "end" | "prev-edit" | "next-edit" | "snap" | "pan"
-                | "preview-axis" | "delete" => {
+                | "preview-axis" | "delete" | "debug" => {
                     app.invoke_app_menu_selected(SharedString::from(action));
                 }
                 // The rest: the editor's own table, the way the phone's
@@ -1849,6 +1875,41 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     });
 
     // ── the project sheet ──
+    editor.on_project_canvas_set(on_window!(|state, colour: slint::Color| {
+        state.set_project_canvas(colour);
+    }));
+    editor.on_project_edit(on_window!(
+        |state, kind: i32, value: f32, text: SharedString| {
+            let msg = match kind {
+                0 => ProjectMsg::NameEdited(text.to_string()),
+                1 => ProjectMsg::SizeChanged(value as i32),
+                2 => ProjectMsg::RateChanged(value as i32),
+                3 => ProjectMsg::CustomWidth(value),
+                4 => ProjectMsg::CustomHeight(value),
+                5 => ProjectMsg::CustomFps(value),
+                6 => ProjectMsg::ColorSpaceChanged(value as i32),
+                7 => {
+                    let name = text.trim().to_string();
+                    if !name.is_empty() {
+                        let id = state.project().active_timeline_id.clone();
+                        state.apply(concat_project::Command::RenameTimeline {
+                            timeline_id: id,
+                            name,
+                        });
+                    }
+                    return;
+                }
+                _ => return,
+            };
+            // A name emptied is not a name: the project keeps the one it had.
+            if let ProjectMsg::NameEdited(name) = &msg
+                && name.trim().is_empty()
+            {
+                return;
+            }
+            state.handle(Msg::Project(ProjectMsg::Live(Box::new(msg))));
+        }
+    ));
     editor.on_modify_project(on_window!(|state| {
         state.handle(Msg::Project(ProjectMsg::Open));
     }));
@@ -2035,6 +2096,15 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     }));
     app.on_export_again(on_window!(|state| {
         state.handle(Msg::Export(ExportMsg::Again));
+    }));
+    app.on_export_preset_chosen(on_window!(|state, index: i32| {
+        state.handle(Msg::Export(ExportMsg::PresetChosen(index)));
+    }));
+    app.on_export_preset_save(on_window!(|state| {
+        state.handle(Msg::Export(ExportMsg::PresetSave));
+    }));
+    app.on_export_preset_remove(on_window!(|state| {
+        state.handle(Msg::Export(ExportMsg::PresetRemove));
     }));
     app.on_export_browse(on_window!(|state| {
         state.handle(Msg::Export(ExportMsg::Browse));
@@ -2308,6 +2378,16 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
                             },
                         ),
                         "export" => state.handle(Msg::Export(ExportMsg::Open)),
+                        "export-clips" | "group" | "ungroup" | "loop" | "panel-media"
+                        | "panel-preview" | "panel-timeline" | "panel-keyframes"
+                        | "panel-inspector" => state.shortcut(action.as_str()),
+                        "debug" => {
+                            let open = !app.get_debug_open();
+                            app.set_debug_open(open);
+                            if open {
+                                app.invoke_refresh_log();
+                            }
+                        }
                         "template" => state.save_template(),
                         "speech" => state.handle(Msg::Speech(SpeechMsg::Open)),
                         "clear-cache" => state.clear_project_cache(),
@@ -2664,29 +2744,6 @@ fn typing(app: &App) -> bool {
         .is_some_and(|item| item.downcast::<TextInput>().is_some())
 }
 
-/// Adds a pane of `kind` beside the largest seat: to its right when that
-/// seat is wide enough to halve across, else below it.
-fn add_pane(state: &mut Studio, kind: PaneKind) {
-    let seats = state.dock_layout().seats;
-    let Some(biggest) = seats
-        .iter()
-        .max_by(|a, b| (a.width * a.height).total_cmp(&(b.width * b.height)))
-    else {
-        return;
-    };
-    let across = biggest.width >= SEAT_MIN_W * 2.0;
-    let down = biggest.height >= SEAT_MIN_H * 2.0;
-    let side = if biggest.width >= biggest.height && (across || !down) {
-        DockSide::Right
-    } else {
-        DockSide::Bottom
-    };
-    let Some(path) = state.dock.leaf_path(biggest.index.max(0) as usize) else {
-        return;
-    };
-    state.dock.split_leaf(&path, kind, side);
-}
-
 /// How long a quit waits for an export it cancelled to stop.
 const EXPORT_PATIENCE: std::time::Duration = std::time::Duration::from_secs(10);
 
@@ -3035,4 +3092,29 @@ mod tests {
         assert!(outcome.is_err());
         assert!(!relaunched.get(), "nothing is relaunched on a failed save");
     }
+}
+
+/// The last stretch of this run's log file, for the Debug section.
+fn read_log_tail() -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    const TAIL: u64 = 192 * 1024;
+    let Some(path) = concat_host::logs::current() else {
+        return "No log file for this run.".to_owned();
+    };
+    let read = || -> std::io::Result<String> {
+        let mut file = std::fs::File::open(path)?;
+        let len = file.metadata()?.len();
+        let start = len.saturating_sub(TAIL);
+        file.seek(SeekFrom::Start(start))?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        // A cut tail starts mid-line: drop the fragment.
+        Ok(if start > 0 {
+            text.split_once('\n').map_or(text.clone(), |(_, rest)| rest.to_owned())
+        } else {
+            text
+        })
+    };
+    read().unwrap_or_else(|error| format!("Could not read {}: {error}", path.display()))
 }

@@ -105,6 +105,9 @@ export struct ClipData {
     transition-selected: bool,
     /// at least one video effect is live: draws the `fx` chip in the header
     fx: bool,
+    /// The clip sits in a frame: a shape that crops the picture, from the
+    /// Frames shelf. Draws the frame chip in the header.
+    framed: bool,
     /// Seconds of transition on the cut into this clip; zero for none. The
     /// marker at the clip's head is sized to this, in step with what the
     /// cut actually rides.

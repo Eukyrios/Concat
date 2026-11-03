@@ -4,8 +4,9 @@
 //! The editor window as a program: what a desktop or an iPhone launches.
 //! Everything is in the library; see `lib.rs`.
 
-// Hide the console window on Windows in release builds.
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// No console window on Windows, in debug builds too: the log goes to a file
+// and the editor's Debug panel (Settings) shows and copies it.
+#![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod launch;
 

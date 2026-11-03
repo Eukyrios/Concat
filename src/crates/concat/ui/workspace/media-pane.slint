@@ -173,11 +173,14 @@ component StripEnd inherits Rectangle {
     callback clicked();
 
     y: 0;
-    width: 22px;
+    // Wide enough that a chip half under the button is faded to the header's
+    // colour before the button's edge: at 22px the icon of the chip beside
+    // it showed through the gap and read as a stray mark under the arrow.
+    width: 34px;
     background: root.fade;
 
     Rectangle {
-        x: root.glyph == Glyph.chevron-left ? 2px : parent.width - self.width - 2px;
+        x: root.glyph == Glyph.chevron-left ? 4px : parent.width - self.width - 4px;
         y: (parent.height - self.height) / 2;
         width: 16px;
         height: 16px;
@@ -1569,6 +1572,9 @@ struct ShapeCardData {
 // shape and not which colour - the colour is the clip's to set.
 component ShapeCard inherits Rectangle {
     in property <ShapeCardData> shape;
+    /// A shape card carries a drag onto the lanes; a frame card is only
+    /// clicked, because a frame is put on a picture, not laid down.
+    in property <bool> draggable: true;
 
     callback placed();
 
@@ -1577,6 +1583,7 @@ component ShapeCard inherits Rectangle {
     property <string> payload: "shape:\{root.shape.id}:\{root.shape.label}";
 
     drag := DragArea {
+        enabled: root.draggable;
         data: Payload.of(root.payload);
         drag-image: Payload.preview(root.payload);
         drag-image-offset-x: -8;
@@ -1651,9 +1658,30 @@ component ShapeCard inherits Rectangle {
 export component ShapeGrid inherits Rectangle {
     /// Placed by a click; a drag carries the same payload itself.
     callback placed(shape: string, label: string);
+    /// The Frames shelf instead of the Shapes one: the figures that can crop
+    /// a picture, and a card that takes the frame off.
+    in property <bool> frames: false;
+    /// A frame was clicked: its id, or `none`.
+    callback framed(shape: string);
 
     // The ids are written into project files, so they are stable for ever;
     // see ShapeKind in concat-project.
+    property <[ShapeCardData]> frame-shapes: [
+        { id: "none", label: I18n.t("mediaPane.frameNone"), commands: "M5 5l14 14 M19 5L5 19" },
+        { id: "square", label: I18n.t("mediaPane.shapeSquare"), commands: "M4 4h16v16H4z" },
+        { id: "circle", label: I18n.t("mediaPane.shapeCircle"),
+            commands: "M2 12a10 10 0 1 0 20 0a10 10 0 1 0 -20 0" },
+        { id: "triangle", label: I18n.t("mediaPane.shapeTriangle"), commands: "M12 4l9 16H3z" },
+        { id: "parallelogram", label: I18n.t("mediaPane.shapeParallelogram"),
+            commands: "M8 5h13l-5 14H3z" },
+        { id: "trapezoid", label: I18n.t("mediaPane.shapeTrapezoid"), commands: "M8 5h8l5 14H3z" },
+        { id: "heart", label: I18n.t("mediaPane.frameHeart"),
+            commands: "M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z" },
+        { id: "star", label: I18n.t("mediaPane.frameStar"),
+            commands: "M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" },
+    ];
+    property <[ShapeCardData]> shown: root.frames ? root.frame-shapes : root.shapes;
+
     property <[ShapeCardData]> shapes: [
         { id: "square", label: I18n.t("mediaPane.shapeSquare"), commands: "M4 4h16v16H4z" },
         { id: "circle", label: I18n.t("mediaPane.shapeCircle"),
@@ -1673,18 +1701,25 @@ export component ShapeGrid inherits Rectangle {
     property <length> card-w: (root.width - (root.cols - 1) * root.gap) / root.cols;
     // A square tile, then the name under it.
     property <length> card-h: root.card-w + 4px + 14px;
-    property <int> rows: Math.ceil(root.shapes.length / root.cols);
+    property <int> rows: Math.ceil(root.shown.length / root.cols);
 
     height: root.rows > 0 ? root.rows * (root.card-h + root.gap) - root.gap : 0px;
 
-    for entry[index] in root.shapes: ShapeCard {
+    for entry[index] in root.shown: ShapeCard {
         x: Math.mod(index, root.cols) * (root.card-w + root.gap);
         y: Math.floor(index / root.cols) * (root.card-h + root.gap);
         width: root.card-w;
         height: root.card-h;
         shape: entry;
+        draggable: !root.frames;
 
-        placed => { root.placed(entry.id, entry.label); }
+        placed => {
+            if (root.frames) {
+                root.framed(entry.id);
+            } else {
+                root.placed(entry.id, entry.label);
+            }
+        }
     }
 }
 
@@ -1781,6 +1816,9 @@ export component MediaPane inherits Rectangle {
     /// Stickers page: add the figure `shape` names at the playhead, as a
     /// clip called `label`.
     callback add-shape(shape: string, label: string);
+    /// Stickers page, Frames shelf: crop the selected picture to `shape`, or
+    /// take its frame off for `none`.
+    callback add-frame(shape: string);
     /// Catalogue pages: apply to the selected clip; Rust validates & explains.
     callback apply-effect(effect-id: string);
     callback apply-transition(transition-id: string);
@@ -1837,6 +1875,8 @@ export component MediaPane inherits Rectangle {
     property <bool> text-open: true;
     /// 0 = Styles, 1 = Languages
     property <int> text-category;
+    /// Which shelf the Stickers page shows: 0 Shapes, 1 Frames.
+    property <int> stickers-category;
     property <bool> stickers-open: true;
     property <bool> transitions-open: true;
     property <bool> effects-open: true;
@@ -2014,7 +2054,7 @@ export component MediaPane inherits Rectangle {
                         x: 0;
                         height: parent.height;
                         glyph: Glyph.chevron-left;
-                        fade: @linear-gradient(90deg, Theme.panel 60%, transparent);
+                        fade: @linear-gradient(90deg, Theme.panel 80%, transparent);
                         clicked => {
                             strip.content-x = Math.min(0px, strip.content-x + strip.width * 0.6);
                         }
@@ -2023,7 +2063,7 @@ export component MediaPane inherits Rectangle {
                         x: parent.width - self.width;
                         height: parent.height;
                         glyph: Glyph.chevron-right;
-                        fade: @linear-gradient(270deg, Theme.panel 60%, transparent);
+                        fade: @linear-gradient(270deg, Theme.panel 80%, transparent);
                         clicked => {
                             strip.content-x = Math.max(root.strip-floor, strip.content-x - strip.width * 0.6);
                         }
@@ -2244,7 +2284,14 @@ export component MediaPane inherits Rectangle {
                         if root.stickers-open: CategoryRow {
                             height: 24px;
                             label: I18n.t("mediaPane.shapes");
-                            current: true;
+                            current: root.stickers-category == 0;
+                            clicked => { root.stickers-category = 0; }
+                        }
+                        if root.stickers-open: CategoryRow {
+                            height: 24px;
+                            label: I18n.t("mediaPane.frames");
+                            current: root.stickers-category == 1;
+                            clicked => { root.stickers-category = 1; }
                         }
                     }
 
@@ -2624,7 +2671,9 @@ export component MediaPane inherits Rectangle {
 
                     ShapeGrid {
                         horizontal-stretch: 1;
+                        frames: root.stickers-category == 1;
                         placed(shape, label) => { root.add-shape(shape, label); }
+                        framed(shape) => { root.add-frame(shape); }
                     }
                 }
 

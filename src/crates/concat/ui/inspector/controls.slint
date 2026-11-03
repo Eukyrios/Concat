@@ -5,6 +5,8 @@ import { I18n } from "../i18n.slint";
 import { Theme } from "../theme/theme.slint";
 import { Fmt, Focus } from "../util.slint";
 import { Glyph, Icon } from "../icons.slint";
+import { Tip } from "../primitives/tooltip.slint";
+import { Eyedropper } from "../primitives/eyedropper.slint";
 import { NumberField } from "../primitives/number-field.slint";
 import { ColorPicker } from "../primitives/color-picker.slint";
 import { ClipField, ClipKeyData, Keyframes } from "../timeline/model.slint";
@@ -633,24 +635,13 @@ export component HelpButton inherits Rectangle {
             mouse-cursor: help;
         }
 
-        Tooltip {
-            Rectangle {
-                width: 260px;
-                background: Theme.raised;
-                border-width: 1px;
-                border-color: Theme.line-strong;
-                border-radius: Theme.r;
-
-                HorizontalLayout {
-                    padding: 10px;
-                    Text {
-                        text: root.text;
-                        color: Theme.fg;
-                        font-size: Theme.fs-sm;
-                        wrap: word-wrap;
-                    }
-                }
-            }
+        // The app's own bubble, which wraps and keeps inside the window; the
+        // built-in popup it replaces took a box the size of the pane.
+        Tip {
+            width: parent.width;
+            height: parent.height;
+            text: root.text;
+            active: touch.has-hover;
         }
     }
 }
@@ -820,6 +811,9 @@ export component ColourField inherits HorizontalLayout {
     in property <color> value;
     /// The colour carries an alpha of its own; see ColorPicker.
     in property <bool> alpha: false;
+    /// Which field the dropper fills, in Rust's numbering; below zero and
+    /// there is no dropper on this row.
+    in property <int> eyedrop: -1;
 
     callback changed(value: color);
 
@@ -931,6 +925,44 @@ export component ColourField inherits HorizontalLayout {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    // The dropper: a colour from the frame on the monitor.
+    if root.eyedrop >= 0: VerticalLayout {
+        alignment: center;
+
+        dropper := Rectangle {
+            width: 24px;
+            height: 24px;
+            border-radius: Theme.r-sm;
+            background: drop-touch.has-hover || Eyedropper.active ? Theme.field-hover : Theme.field;
+
+            Icon {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                glyph: Glyph.pipette;
+                size: 13px;
+                tint: Eyedropper.active ? Theme.accent : Theme.fg-muted;
+            }
+
+            drop-touch := TouchArea {
+                mouse-cursor: pointer;
+                clicked => {
+                    if (Eyedropper.active) {
+                        Eyedropper.cancel();
+                    } else {
+                        Eyedropper.start(root.eyedrop);
+                    }
+                }
+            }
+
+            Tip {
+                width: parent.width;
+                height: parent.height;
+                text: I18n.t("eyedropper.tip");
+                active: drop-touch.has-hover;
             }
         }
     }

@@ -1162,6 +1162,67 @@ export component BackgroundRows inherits VerticalLayout {
     }
 }
 
+/// The project's Background as its own section of the Details panel: the
+/// colour that fills the frame where nothing covers it, a switch that
+/// makes it clear instead, and a switch that fills it with a blurred,
+/// enlarged copy of the picture - the timeline's `Backdrop`, the one the
+/// clips on the main lane follow. A picked colour is opaque, so choosing
+/// one also ends transparency; the switch brings it back, keeping the
+/// colour underneath for when it is switched off.
+export component BackgroundSection inherits VerticalLayout {
+    /// The canvas colour, alpha included: short of opaque is transparent.
+    in property <color> canvas;
+
+    callback canvas-changed(value: color);
+
+    property <bool> clear: root.canvas.to-hsv().alpha < 1;
+    property <bool> blurred: Backdrop.timeline.mode == 1;
+    // Seeded rather than bound: the knob writes it as it is dragged.
+    property <float> amount;
+    init => { root.amount = Backdrop.timeline.amount; }
+    changed blurred => { root.amount = Backdrop.timeline.amount; }
+
+    ColourField {
+        label: I18n.t("common.color");
+        value: root.canvas;
+        alpha: false;
+        changed(colour) => { root.canvas-changed(colour.with-alpha(1)); }
+    }
+
+    SwitchRow {
+        label: I18n.t("start.transparent");
+        // Set again whenever the state changes: a press assigns `checked`
+        // inside the switch and ends a plain binding (#250).
+        property <bool> shown: root.clear;
+        checked: self.shown;
+        changed shown => { self.checked = self.shown; }
+        toggled(on) => {
+            root.canvas-changed(root.canvas.with-alpha(on ? 0 : 1));
+        }
+    }
+
+    SwitchRow {
+        label: I18n.t("configPane.blurredContent");
+        property <bool> shown: root.blurred;
+        checked: self.shown;
+        changed shown => { self.checked = self.shown; }
+        toggled(on) => { Backdrop.set-mode(false, on ? 1 : 0); }
+    }
+
+    if root.blurred: Param {
+        label: I18n.t("clipInspector.softness");
+        value <=> root.amount;
+        minimum: 0;
+        maximum: 1;
+        step: 0.01;
+        default-value: 0.5;
+        fmt: ParamFormat.fraction;
+        unit: "%";
+        unit-scale: 100;
+        changed(v) => { Backdrop.set-amount(false, v); }
+    }
+}
+
 /// Video: how the picture sits in the frame, how solid it is, and whether
 /// its background is keyed out.
 export component VideoPanel inherits VerticalLayout {
@@ -1272,7 +1333,10 @@ export component VideoPanel inherits VerticalLayout {
         I18n.t("mask.circle"),
         I18n.t("mask.rectangle"),
         I18n.t("mask.heart"),
-        I18n.t("mask.star")
+        I18n.t("mask.star"),
+        I18n.t("mask.triangle"),
+        I18n.t("mask.parallelogram"),
+        I18n.t("mask.trapezoid")
     ];
 
     function seed() {

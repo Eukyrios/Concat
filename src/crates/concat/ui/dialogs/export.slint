@@ -4,6 +4,8 @@
 import { I18n } from "../i18n.slint";
 import { Theme } from "../theme/theme.slint";
 import { Glyph, Icon } from "../icons.slint";
+import { IconButton } from "../primitives/panel.slint";
+import { Select } from "../primitives/select.slint";
 import { Button, CopyChip, DialogRow, DialogSection, Field, Progress } from "../primitives/modal.slint";
 import { NumberField } from "../primitives/number-field.slint";
 import { Select } from "../primitives/select.slint";
@@ -31,6 +33,13 @@ export struct ExportData {
     name: string,
     /// the whole path, already shortened for display by whoever owns it
     path: string,
+    /// the folder the file goes to
+    folder: string,
+    /// destination list: same location as source, saved presets, custom
+    presets: [string],
+    preset: int,
+    can-save-preset: bool,
+    can-remove-preset: bool,
     /// "1920 x 1080 · 30.00 fps"
     format: string,
     duration: string,
@@ -148,8 +157,12 @@ component PreviewSection inherits DialogSection {
     /// The frame lets something show through (#456): a checker under it,
     /// as on the monitor.
     in property <bool> see-through;
+    in property <bool> playing;
+    in property <bool> looping;
 
     callback seek(seconds: float);
+    callback play-toggle();
+    callback loop-toggle();
 
     title: I18n.t("common.preview");
 
@@ -179,6 +192,26 @@ component PreviewSection inherits DialogSection {
             height: 100%;
             source: root.frame;
             image-fit: contain;
+        }
+    }
+
+    // Play and loop, so the cut can be watched through, and watched round,
+    // before the file is written.
+    HorizontalLayout {
+        alignment: center;
+        spacing: 6px;
+        IconButton {
+            glyph: root.playing ? Glyph.pause : Glyph.play;
+            label: root.playing ? I18n.t("previewPane.pause") : I18n.t("previewPane.play");
+            icon-size: 16px;
+            accent: true;
+            clicked => { root.play-toggle(); }
+        }
+        IconButton {
+            glyph: Glyph.repeat;
+            label: I18n.t("previewPane.loop");
+            checked: root.looping;
+            clicked => { root.loop-toggle(); }
         }
     }
 
@@ -266,20 +299,57 @@ component DestinationSection inherits DialogSection {
 
     callback name-edited(name: string);
     callback browse();
+    callback preset-chosen(index: int);
+    callback preset-save();
+    callback preset-remove();
 
     title: I18n.t("export.destination");
 
+    // Where: a saved place, or the folder the footage came from, which is
+    // always the first on the list; Browse picks any other folder.
+    if !root.phone: DialogRow {
+        label: I18n.t("export.saveTo");
+        Select {
+            horizontal-stretch: 1;
+            options: root.data.presets;
+            current: root.data.preset;
+            changed(index) => { root.preset-chosen(index); }
+        }
+        Button {
+            label: I18n.t("export.browse");
+            glyph: Glyph.import;
+            clicked => { root.browse(); }
+        }
+    }
+
+    if !root.phone: Text {
+        text: root.data.folder;
+        color: Theme.fg-dim;
+        font-family: Theme.font-technical;
+        font-size: Theme.fs-sm;
+        overflow: elide;
+    }
+
+    if !root.phone && (root.data.can-save-preset || root.data.can-remove-preset): DialogRow {
+        if root.data.can-save-preset: Button {
+            label: I18n.t("export.savePreset");
+            glyph: Glyph.plus;
+            clicked => { root.preset-save(); }
+        }
+        if root.data.can-remove-preset: Button {
+            label: I18n.t("export.removePreset");
+            glyph: Glyph.trash;
+            clicked => { root.preset-remove(); }
+        }
+    }
+
+    // What: the file's own name, apart from where it goes.
     DialogRow {
+        label: I18n.t("export.fileName");
         Field {
             value: root.data.name;
             technical: true;
             edited(text) => { root.name-edited(text); }
-        }
-
-        if !root.phone: Button {
-            label: I18n.t("export.browse");
-            glyph: Glyph.import;
-            clicked => { root.browse(); }
         }
     }
 
@@ -598,10 +668,17 @@ export component ExportDialog inherits Rectangle {
     in property <float> duration-seconds;
     in property <float> frame-rate;
     callback seek(seconds: float);
+    in property <bool> playing;
+    in property <bool> looping;
+    callback play-toggle();
+    callback loop-toggle();
 
     callback closed();
     callback name-edited(name: string);
     callback browse();
+    callback preset-chosen(index: int);
+    callback preset-save();
+    callback preset-remove();
     callback rate-changed(index: int);
     callback codec-changed(index: int);
     callback ten-bit-changed(on: bool);
@@ -735,6 +812,9 @@ export component ExportDialog inherits Rectangle {
                             phone: root.phone;
                             name-edited(name) => { root.name-edited(name); }
                             browse => { root.browse(); }
+                            preset-chosen(index) => { root.preset-chosen(index); }
+                            preset-save => { root.preset-save(); }
+                            preset-remove => { root.preset-remove(); }
                         }
                         if !root.running: OutputSection {
                             data: root.data;
@@ -761,6 +841,10 @@ export component ExportDialog inherits Rectangle {
                                 duration: root.duration-seconds;
                                 frame-rate: root.frame-rate;
                                 see-through: root.data.see-through;
+                                playing: root.playing;
+                                looping: root.looping;
+                                play-toggle => { root.play-toggle(); }
+                                loop-toggle => { root.loop-toggle(); }
                                 seek(seconds) => { root.seek(seconds); }
                             }
                             SummarySection { data: root.data; }
@@ -769,6 +853,9 @@ export component ExportDialog inherits Rectangle {
                                 phone: root.phone;
                                 name-edited(name) => { root.name-edited(name); }
                                 browse => { root.browse(); }
+                                preset-chosen(index) => { root.preset-chosen(index); }
+                                preset-save => { root.preset-save(); }
+                                preset-remove => { root.preset-remove(); }
                             }
                         }
 
@@ -802,6 +889,10 @@ export component ExportDialog inherits Rectangle {
                                 duration: root.duration-seconds;
                                 frame-rate: root.frame-rate;
                                 see-through: root.data.see-through;
+                                playing: root.playing;
+                                looping: root.looping;
+                                play-toggle => { root.play-toggle(); }
+                                loop-toggle => { root.loop-toggle(); }
                                 seek(seconds) => { root.seek(seconds); }
                             }
                             SummarySection { data: root.data; }
@@ -830,6 +921,9 @@ export component ExportDialog inherits Rectangle {
                                 phone: root.phone;
                                 name-edited(name) => { root.name-edited(name); }
                                 browse => { root.browse(); }
+                                preset-chosen(index) => { root.preset-chosen(index); }
+                                preset-save => { root.preset-save(); }
+                                preset-remove => { root.preset-remove(); }
                             }
                         }
                     }

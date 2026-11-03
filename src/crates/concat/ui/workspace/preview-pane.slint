@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Jareer Abdullah and Concat contributors
 
+import { Eyedropper } from "../primitives/eyedropper.slint";
 import { I18n } from "../i18n.slint";
 import { Theme } from "../theme/theme.slint";
 import { Fmt } from "../util.slint";
@@ -623,7 +624,7 @@ component StageOverlay inherits Rectangle {
         property <bool> panning;
         property <bool> snap;
         mouse-cursor: self.panning ? MouseCursor.grabbing
-            : root.painting ? MouseCursor.crosshair : MouseCursor.default;
+            : (root.painting || Eyedropper.active) ? MouseCursor.crosshair : MouseCursor.default;
 
         pointer-event(event) => {
             // The right button opens the frame's menu and does nothing
@@ -747,6 +748,9 @@ export component PreviewPane inherits Rectangle {
     /// live out there and the timecode field takes any frame.
     in property <bool> playhead-free;
     in property <bool> playing;
+    /// Playback starts over at the end.
+    in property <bool> looping;
+    callback loop-toggled();
     /// Whether anything is under the playhead, and what. "Nothing under the
     /// playhead" is a real state a monitor has to render, not a placeholder
     /// for one.
@@ -1086,7 +1090,13 @@ export component PreviewPane inherits Rectangle {
                 stroke-width: root.stroke-width;
                 stroke-erase: root.stroke-erase;
                 painting: root.painting;
-                pressed(x, y, additive) => { root.stage-pressed(x, y, additive); }
+                pressed(x, y, additive) => {
+                    if (Eyedropper.active) {
+                        Eyedropper.frame-picked(x, y);
+                    } else {
+                        root.stage-pressed(x, y, additive);
+                    }
+                }
                 grip-pressed(id, grip, x, y) => { root.stage-grip-pressed(id, grip, x, y); }
                 dragged(x, y, snap) => { root.stage-dragged(x, y, snap); }
                 released => { root.stage-released(); }
@@ -1098,6 +1108,59 @@ export component PreviewPane inherits Rectangle {
                     frame-menu.request-x = self.absolute-position.x - root.absolute-position.x + x;
                     frame-menu.request-y = self.absolute-position.y - root.absolute-position.y + y;
                     root.frame-token += 1;
+                }
+            }
+
+            // The dropper is waiting for a click on the picture: said on the
+            // monitor for as long as it is, with a cross to give it up.
+            if Eyedropper.active: Rectangle {
+                x: stage.x + (stage.width - self.width) / 2;
+                y: stage.y + 8px;
+                width: pick-row.preferred-width;
+                height: 24px;
+                border-radius: 12px;
+                background: Theme.scrim;
+
+                pick-row := HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 4px;
+                    spacing: 6px;
+
+                    VerticalLayout {
+                        alignment: center;
+                        Icon {
+                            glyph: Glyph.pipette;
+                            size: 12px;
+                            tint: Theme.on-scrim;
+                        }
+                    }
+                    Text {
+                        text: I18n.t("eyedropper.hint");
+                        color: Theme.on-scrim;
+                        font-size: Theme.fs-sm;
+                        vertical-alignment: center;
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        Rectangle {
+                            width: 18px;
+                            height: 18px;
+                            border-radius: 9px;
+                            background: pick-end.has-hover ? Theme.on-scrim.with-alpha(0.2) : transparent;
+
+                            Icon {
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                                glyph: Glyph.close;
+                                size: 10px;
+                                tint: Theme.on-scrim;
+                            }
+                            pick-end := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { Eyedropper.cancel(); }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -1306,6 +1369,12 @@ export component PreviewPane inherits Rectangle {
                         label: I18n.t("common.goToEnd");
                         enabled: !root.at-end;
                         clicked => { root.seek(root.duration); }
+                    }
+                    IconButton {
+                        glyph: Glyph.repeat;
+                        label: I18n.t("previewPane.loop");
+                        checked: root.looping;
+                        clicked => { root.loop-toggled(); }
                     }
                 }
 

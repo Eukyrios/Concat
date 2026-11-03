@@ -267,6 +267,8 @@ export component KeyframesPane inherits Pane {
     in property <SelectedClipData> selected;
     in property <int> pane-seat;
     in property <bool> pane-removable;
+    /// Shown as a tab of the timeline, which brings its own bar.
+    in property <bool> embedded;
     callback pane-picked(kind: PaneKind);
     callback pane-removed();
     callback clip-set(field: ClipField, value: float);
@@ -297,20 +299,20 @@ export component KeyframesPane inherits Pane {
         // keys used to sit here too, and a row of seven things had a minimum
         // width most seats fall under - the pane clips, and the first thing
         // to go off the end was the switcher.
-        PaneHeader {
-            title: I18n.t("common.keyframes");
+        if !root.embedded: PaneHeader {
+                title: I18n.t("common.keyframes");
 
-            VerticalLayout {
-                alignment: center;
-                PaneSwitcher {
-                    kind: PaneKind.keyframes;
-                    seat: root.pane-seat;
-                    removable: root.pane-removable;
-                    picked(kind) => { root.pane-picked(kind); }
-                    removed => { root.pane-removed(); }
+                VerticalLayout {
+                    alignment: center;
+                    PaneSwitcher {
+                        kind: PaneKind.keyframes;
+                        seat: root.pane-seat;
+                        removable: root.pane-removable;
+                        picked(kind) => { root.pane-picked(kind); }
+                        removed => { root.pane-removed(); }
+                    }
                 }
             }
-        }
 
         // ── the tools ───────────────────────────────────────────────────
         //

@@ -1,0 +1,118 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 Jareer Abdullah and Concat contributors
+
+import { I18n } from "../i18n.slint";
+import { Section, SectionBody, SectionHeader } from "../primitives/panel.slint";
+import { ColourField, InspectorFmt, Param, ParamFormat, SwitchRow } from "controls.slint";
+import { ClipField, ClipTextField, SelectedClipData } from "../timeline/model.slint";
+
+// A shape's paint: what fills it, and the line round it.
+//
+// The fill and the outline are each a colour with an alpha of its own, so a
+// fill taken down to nothing leaves an outline alone and an outline of no
+// width leaves a solid figure. The sizes are fractions of the frame's
+// height, as everything on a shape is. The two colours share the picker
+// every colour in the inspector uses, dropper included: the frame on the
+// monitor or a picture file will fill either.
+export component ShapePanel inherits VerticalLayout {
+    in property <SelectedClipData> selected;
+
+    callback set(field: ClipField, value: float);
+    callback set-colour(field: ClipTextField, value: color);
+    callback commit();
+
+    /// A colour taken down to nothing is the way to leave a fill or an
+    /// outline out: it keeps its hue, so turning it back on brings the same
+    /// colour back, and it is shown as a switch because a picker whose alpha
+    /// has been dragged to zero looks like a picker that does nothing.
+    property <bool> fill-clear: root.selected.fill.to-hsv().alpha < 0.01;
+    property <bool> outline-clear: root.selected.stroke.to-hsv().alpha < 0.01;
+
+    Section {
+        fill := SectionHeader {
+            title: I18n.t("shapePanel.fill");
+            collapsible: true;
+            summary: root.selected.fill-hex;
+        }
+
+        if fill.open: SectionBody {
+            SwitchRow {
+                label: I18n.t("shapePanel.noFill");
+                checked: root.fill-clear;
+                toggled(on) => {
+                    root.set-colour(ClipTextField.color,
+                        root.selected.fill.with-alpha(on ? 0 : 1));
+                    root.commit();
+                }
+            }
+
+            // Always there, never swapped for the switch's sake: a picker that
+            // is rebuilt because its own alpha reached zero closes under the
+            // pointer. Picking a colour while the fill is off turns it on.
+            ColourField {
+                label: I18n.t("common.color");
+                value: root.selected.fill;
+                alpha: true;
+                eyedrop: 0;
+                changed(shade) => {
+                    root.set-colour(ClipTextField.color,
+                        root.fill-clear && shade.to-hsv().alpha < 0.01 ? shade.with-alpha(1) : shade);
+                    root.commit();
+                }
+            }
+        }
+    }
+
+    Section {
+        outline := SectionHeader {
+            title: I18n.t("shapePanel.outline");
+            collapsible: true;
+            summary: InspectorFmt.format(ParamFormat.outline, root.selected.stroke-width);
+        }
+
+        if outline.open: SectionBody {
+            Param {
+                label: I18n.t("common.width");
+                value: root.selected.stroke-width;
+                minimum: 0;
+                maximum: 0.1;
+                step: 0.002;
+                default-value: 0;
+                fmt: ParamFormat.outline;
+                unit: "%";
+                unit-scale: 100;
+                changed(v) => { root.set(ClipField.stroke-width, v); root.commit(); }
+            }
+
+            SwitchRow {
+                label: I18n.t("shapePanel.noOutline");
+                checked: root.outline-clear;
+                toggled(on) => {
+                    root.set-colour(ClipTextField.stroke-color,
+                        root.selected.stroke.with-alpha(on ? 0 : 1));
+                    // An outline with no width has nothing to show once it
+                    // is switched back on.
+                    if (!on && root.selected.stroke-width <= 0) {
+                        root.set(ClipField.stroke-width, 0.01);
+                    }
+                    root.commit();
+                }
+            }
+
+            ColourField {
+                label: I18n.t("common.color");
+                value: root.selected.stroke;
+                alpha: true;
+                eyedrop: 1;
+                changed(shade) => {
+                    root.set-colour(ClipTextField.stroke-color,
+                        root.outline-clear && shade.to-hsv().alpha < 0.01 ? shade.with-alpha(1) : shade);
+                    if (root.selected.stroke-width <= 0) {
+                        root.set(ClipField.stroke-width, 0.01);
+                    }
+                    root.commit();
+                }
+            }
+        }
+    }
+}

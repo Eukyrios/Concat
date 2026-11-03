@@ -102,6 +102,17 @@ export component TimelinePane inherits Rectangle {
     /// Where the cut ends, in seconds; see the bar under the lanes.
     in property <float> duration-seconds;
     in-out property <length> track-scroll;
+    /// The span of lanes to keep in view when the pane is resized, measured
+    /// down the stack: the selected clip's row if one is selected, else
+    /// every clip's, else nothing - which leaves the scroll where it is.
+    in property <length> focus-top;
+    in property <length> focus-bottom;
+
+    /// The keyframes tab. Shown when its panel is open; current when its
+    /// contents - the seat's children - are what the pane shows.
+    in property <bool> keyframes-shown;
+    in-out property <bool> keyframes-current;
+    callback keyframes-closed();
 
     callback scrubbed(seconds: float);
     callback key-mark-moved(from: float, to: float);
@@ -194,6 +205,24 @@ export component TimelinePane inherits Rectangle {
     /// video under the fold - as the phone did until 1e683882.
     property <length> at: Math.max(0px,
         root.overflow - Math.min(root.overflow, root.track-scroll));
+
+    /// Scrolls the lanes so the focus is in the middle of them, or its top
+    /// at the top when it is taller than they are. Run when the lanes change
+    /// height, so a pane dragged taller or shorter keeps what the editor is
+    /// working on in the middle rather than letting it slide off.
+    function recentre() {
+        if (root.focus-bottom <= root.focus-top) {
+            return;
+        }
+        let shown = Math.max(0px, lanes.height - root.ruler-height);
+        let over = Math.max(0px, root.stack-h - shown);
+        let want = (root.focus-bottom - root.focus-top) > shown
+            ? root.focus-top
+            : (root.focus-top + root.focus-bottom) / 2 - shown / 2;
+        root.track-scroll = over - Math.max(0px, Math.min(over, want));
+    }
+
+    changed keyframes-shown => { root.keyframes-current = root.keyframes-shown; }
 
     // The preview axis button's menu. Hosted here and not in the tray,
     // because the surface a ContextMenu opens into is the element it is:
@@ -307,11 +336,17 @@ export component TimelinePane inherits Rectangle {
         TimelineTabs {
             tabs: root.tabs;
             current: root.current-tab;
+            keyframes-shown: root.keyframes-shown;
+            keyframes-current: root.keyframes-current && root.keyframes-shown;
 
-            selected(index) => { root.tab-selected(index); }
+            keyframes-selected => { root.keyframes-current = true; }
+            keyframes-closed => { root.keyframes-closed(); }
+            selected(index) => {
+                root.keyframes-current = false;
+                root.tab-selected(index);
+            }
             renamed(index, name) => { root.tab-renamed(index, name); }
             close-requested(index) => { root.tab-close-requested(index); }
-            added => { root.tab-added(); }
             moved(from, to) => { root.tab-moved(from, to); }
 
             PaneSwitcher {
@@ -446,10 +481,15 @@ export component TimelinePane inherits Rectangle {
                 pan-mode: root.pan-mode;
                 preview-axis: root.preview-axis;
 
+                changed height => { root.recentre(); }
+
                 scrubbed(seconds) => { root.scrubbed(seconds); }
                 split-requested => { root.split(); }
                 key-mark-moved(from, to) => { root.key-mark-moved(from, to); }
-                key-mark-opened => { root.key-mark-opened(); }
+                key-mark-opened => {
+                    root.key-mark-opened();
+                    root.keyframes-current = root.keyframes-shown;
+                }
                 hovered(seconds) => { root.hovered(seconds); }
                 hover-ended => { root.hover-ended(); }
                 floor-pressed => { root.floor-pressed(); }
@@ -486,7 +526,10 @@ export component TimelinePane inherits Rectangle {
                 // How wide the lanes are decides which clips Rust sends;
                 // reported as it changes, and once at first layout.
                 changed width => { root.lanes-resized(self.width / 1px); }
-                init => { root.lanes-resized(self.width / 1px); }
+                init => {
+                    root.lanes-resized(self.width / 1px);
+                    root.recentre();
+                }
             }
 
             // Across the bottom of the lanes: where the view is along the
@@ -522,5 +565,32 @@ export component TimelinePane inherits Rectangle {
                 ruler-height: root.ruler-height;
             }
         }
+    }
+
+    // The keyframes tab's body: whatever the seat puts inside the pane, over
+    // the tray and the lanes and under the tab strip, so the tabs stay where
+    // they are and picking a timeline tab brings the lanes back.
+    Rectangle {
+        visible: root.keyframes-current && root.keyframes-shown;
+        x: 0;
+        y: 33px;
+        width: parent.width;
+        height: Math.max(0px, parent.height - 33px);
+        border-radius: Theme.r-lg;
+        background: Theme.panel;
+
+        // Squares off the top corners the radius above rounded.
+        Rectangle {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: Theme.r-lg;
+            background: Theme.panel;
+        }
+
+        // Nothing under the keys is reachable through them.
+        TouchArea { }
+
+        @children
     }
 }

@@ -11,6 +11,7 @@ import {
 import { MediaFilter, MediaItemData, TextPresetData } from "workspace/media-pane.slint";
 import { DockDivider, DockSide, SeatBox } from "dock.slint";
 import { PaneKind } from "workspace/pane-switcher.slint";
+import { ProjectSheetData } from "dialogs/project.slint";
 import { MenuItemData } from "primitives/context-menu.slint";
 import {
     ClipData, ClipField, ClipTextField, DropData, SelectedClipData, SelectedTransitionData,
@@ -51,9 +52,16 @@ export global Editor {
     /// A seat's dropdown was used: show this view in this seat, and leave
     /// every other seat alone.
     callback dock-set(seat: int, kind: PaneKind);
-    /// The window's add-panel list was used. Where it lands is the layout's
-    /// business, not the caller's — see `dock-add` in main.rs.
-    callback dock-add(kind: PaneKind);
+    /// A panel's switch in the title bar was pressed: it appears in its own
+    /// place, or goes. See `Studio::toggle_panel`.
+    callback panel-toggled(kind: PaneKind);
+    /// Which panels are up, in PaneKind order: library, preview, inspector,
+    /// timeline, and keyframes (a tab of the timeline's).
+    in-out property <[bool]> panels;
+    /// The stretch of the track stack the timeline keeps in view when it is
+    /// resized: the selected clip's lane, or every lane that holds a clip.
+    in-out property <length> focus-top;
+    in-out property <length> focus-bottom;
     /// A seat closed itself. The seat beside it takes the room, which is the
     /// split they were two halves of ceasing to exist.
     callback dock-remove(seat: int);
@@ -119,6 +127,9 @@ export global Editor {
     /// The Stickers page placed a shape: which figure, and what to call
     /// the clip, in the interface's language.
     callback library-add-shape(shape: string, label: string);
+    /// The Frames shelf chose a frame for the selected picture: the shape's
+    /// id, or `none` to take the frame off.
+    callback library-add-frame(shape: string);
     callback library-apply-effect(effect-id: string);
     callback library-apply-transition(transition-id: string);
     /// Filters page: lay the look down as a layer at the playhead.
@@ -248,6 +259,8 @@ export global Editor {
     in-out property <int> ratio-index;
     in-out property <int> quality-index;
     in-out property <bool> playing;
+    /// Playback starts over at the end.
+    in-out property <bool> looping;
     in-out property <bool> has-picture;
     in-out property <string> preview-clip-name;
     in-out property <float> preview-duration;
@@ -262,6 +275,7 @@ export global Editor {
     in-out property <bool> see-through;
 
     callback play-toggled();
+    callback loop-toggled();
     callback seek(seconds: float);
     callback step-frames(frames: float);
     callback ratio-changed(index: int);
@@ -499,6 +513,17 @@ export global Editor {
     in-out property <int> count-clips;
     /// The panel's Modify button: open the project sheet.
     callback modify-project();
+    /// The Details panel's Background row: the timeline's canvas colour.
+    in-out property <color> project-canvas: #000000;
+    /// The project's frame, rate and colour space as the Details panel's
+    /// own controls show them.
+    in-out property <ProjectSheetData> project-live;
+    /// A change made in the Details panel. `kind`: 0 project name, 1 frame
+    /// row, 2 rate row, 3 custom width, 4 custom height, 5 custom rate,
+    /// 6 colour space row, 7 timeline name; the number or the text is
+    /// whichever the kind takes.
+    callback project-edit(kind: int, value: float, text: string);
+    callback project-canvas-set(value: color);
 
     /// A press landed on a pane's floor - a lane, the stage, the bin's
     /// gutter, a clip. Whatever field had focus gives it up, the way a

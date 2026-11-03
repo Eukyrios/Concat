@@ -20,6 +20,13 @@ const FILE: &str = "settings.json";
 /// https://github.com/jub0t/Concat/issues/320
 pub const UI_SCALES: [u32; 6] = [100, 110, 125, 150, 175, 200];
 
+/// A saved place for exports to go: a name to pick it by and the folder.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ExportPreset {
+    pub name: String,
+    pub folder: String,
+}
+
 /// Remembered preferences.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -61,6 +68,9 @@ pub struct Preferences {
     /// it is put. Off by default: a click past the last clip lands there, so
     /// a clip can be dropped at the playhead beyond everything else.
     pub playhead_stops_at_end: bool,
+    /// Playback starts over at the end instead of stopping: for judging
+    /// a loop that has to join up, a Short's most of all.
+    pub loop_playback: bool,
     /// Proxies: a file larger than HD gets a smaller copy written in the
     /// background, and playback at Half and Quarter reads that copy. Off
     /// by default, as in CapCut: a proxy is a full re-encode of every large
@@ -129,6 +139,13 @@ pub struct Preferences {
     /// unless the Settings sheet was asked for more or less. CONCAT_LOG in
     /// the environment overrides it for one run.
     pub log_level: Option<String>,
+    /// Folders the export sheet offers beside "same location as source",
+    /// which is always there and is not stored. Saved from the sheet.
+    #[serde(default)]
+    pub export_presets: Vec<ExportPreset>,
+    /// The panels left open, by name; absent is all of them but keyframes.
+    #[serde(default)]
+    pub panels: Option<Vec<String>>,
     /// How the voiceover panel was last set up.
     #[serde(default)]
     pub voiceover: VoiceoverPrefs,

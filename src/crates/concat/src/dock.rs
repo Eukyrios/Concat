@@ -138,6 +138,29 @@ impl Dock {
         }
     }
 
+    /// The ratio of the split that parts two views: the deepest one with
+    /// both of them under it.
+    pub fn ratio_over(&self, a: PaneKind, b: PaneKind) -> Option<f32> {
+        let Dock::Split {
+            ratio,
+            first,
+            second,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        if first.contains(a) && first.contains(b) {
+            first.ratio_over(a, b)
+        } else if second.contains(a) && second.contains(b) {
+            second.ratio_over(a, b)
+        } else if self.contains(a) && self.contains(b) {
+            Some(*ratio)
+        } else {
+            None
+        }
+    }
+
     pub fn kind_at(&self, index: usize) -> Option<PaneKind> {
         match self.at(&self.leaf_path(index)?) {
             Dock::Leaf(kind) => Some(*kind),
@@ -254,36 +277,214 @@ pub fn lay_out(node: &Dock, (x, y, w, h): (f32, f32, f32, f32), out: &mut DockLa
     }
 }
 
-/// The arrangement the editor opens with: the inspector a column down the
-/// whole right side, and in the rest the library and the monitor across the
-/// top and the timeline under both of them. The inspector is the tallest
-/// thing in the window - a stack of sections that would otherwise scroll -
-/// and the timeline gives up its right end to it, which is the end with
-/// nothing on it yet. About 0.22 of the width to the inspector and 0.25 to
-/// the library, which is 0.32 of what is left once the inspector has had
-/// its share; the timeline takes the lower 0.4 of the height.
-pub fn default_dock() -> Dock {
-    Dock::Split {
-        columns: true,
-        ratio: 0.78,
-        first: Box::new(Dock::Split {
-            columns: false,
-            ratio: 0.6,
-            first: Box::new(Dock::Split {
-                columns: true,
-                ratio: 0.32,
-                first: Dock::leaf(PaneKind::Media),
-                second: Dock::leaf(PaneKind::Preview),
-            }),
-            // The timeline, whose VU meters are a column at its own right
-            // edge (see vu-meter.slint) rather than a seat of their own.
-            second: Dock::leaf(PaneKind::Timeline),
-        }),
-        second: Dock::leaf(PaneKind::Inspector),
+/// Which panels are open. Each kind is either open or shut, so there is never
+/// more than one of any, and each has a place of its own in `build_dock`
+/// rather than going wherever there happens to be room.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Panels {
+    pub media: bool,
+    pub preview: bool,
+    pub inspector: bool,
+    pub timeline: bool,
+    /// The keys. A tab beside the timeline's own while the timeline is
+    /// open, and in the timeline's place while it is not.
+    pub keyframes: bool,
+}
+
+impl Default for Panels {
+    fn default() -> Self {
+        Self {
+            media: true,
+            preview: true,
+            inspector: true,
+            timeline: true,
+            keyframes: false,
+        }
     }
 }
 
-/// The top edge of a row, measured down the stack from the first lane.
+impl Panels {
+    const NAMES: [&'static str; 5] = ["media", "preview", "inspector", "timeline", "keyframes"];
+
+    /// The panels a saved list names; none saved is the default arrangement,
+    /// and a list that names nothing known is too.
+    pub fn from_names(names: Option<&[String]>) -> Self {
+        let Some(names) = names else {
+            return Self::default();
+        };
+        let has = |name: &str| names.iter().any(|n| n == name);
+        let panels = Self {
+            media: has("media"),
+            preview: has("preview"),
+            inspector: has("inspector"),
+            timeline: has("timeline"),
+            keyframes: has("keyframes"),
+        };
+        if panels.open() == 0 {
+            Self::default()
+        } else {
+            panels
+        }
+    }
+
+    pub fn names(&self) -> Vec<String> {
+        Self::NAMES
+            .iter()
+            .zip(self.flags())
+            .filter(|(_, on)| *on)
+            .map(|(name, _)| (*name).to_owned())
+            .collect()
+    }
+
+    fn open(&self) -> usize {
+        self.flags().into_iter().filter(|on| *on).count()
+    }
+
+    /// Whether a kind is showing.
+    pub fn shows(&self, kind: PaneKind) -> bool {
+        match kind {
+            PaneKind::Media => self.media,
+            PaneKind::Preview => self.preview,
+            PaneKind::Inspector => self.inspector,
+            PaneKind::Timeline => self.timeline,
+            _ => self.keyframes,
+        }
+    }
+
+    /// Which panels are up, in `PaneKind` order: library, preview,
+    /// inspector, timeline, keyframes.
+    pub fn flags(&self) -> [bool; 5] {
+        [
+            self.media,
+            self.preview,
+            self.inspector,
+            self.timeline,
+            self.keyframes,
+        ]
+    }
+
+    /// Opens a shut panel and shuts an open one. The last one stays: a
+    /// window with nothing in it has no button left to bring anything back
+    /// with.
+    pub fn flip(&mut self, kind: PaneKind) {
+        let mut next = *self;
+        let slot = match kind {
+            PaneKind::Media => &mut next.media,
+            PaneKind::Preview => &mut next.preview,
+            PaneKind::Inspector => &mut next.inspector,
+            PaneKind::Timeline => &mut next.timeline,
+            _ => &mut next.keyframes,
+        };
+        *slot = !*slot;
+        if next.open() > 0 {
+            *self = next;
+        }
+    }
+
+    /// Opens a panel if it is shut.
+    pub fn show(&mut self, kind: PaneKind) {
+        if !self.shows(kind) {
+            self.flip(kind);
+        }
+    }
+}
+
+/// How the three splits of `build_dock` are divided: the library against the
+/// monitor, those two against the timeline, and all of it against the
+/// inspector. Read back off the dock before it is rebuilt, so a panel
+/// switched on or off does not undo the gutters the person has dragged.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Ratios {
+    pub top: f32,
+    pub left: f32,
+    pub root: f32,
+}
+
+impl Default for Ratios {
+    fn default() -> Self {
+        Self {
+            top: 0.32,
+            left: 0.6,
+            root: 0.78,
+        }
+    }
+}
+
+impl Ratios {
+    /// The ratios the dock has now; a split that is not in it - its panels
+    /// are shut - keeps what was held.
+    pub fn read(self, dock: &Dock) -> Ratios {
+        let upper = if dock.contains(PaneKind::Media) {
+            PaneKind::Media
+        } else {
+            PaneKind::Preview
+        };
+        let lower = if dock.contains(PaneKind::Timeline) {
+            PaneKind::Timeline
+        } else {
+            PaneKind::Keyframes
+        };
+        let anchor = if dock.contains(PaneKind::Media) {
+            PaneKind::Media
+        } else if dock.contains(PaneKind::Preview) {
+            PaneKind::Preview
+        } else {
+            lower
+        };
+        Ratios {
+            top: dock
+                .ratio_over(PaneKind::Media, PaneKind::Preview)
+                .unwrap_or(self.top),
+            left: dock
+                .ratio_over(upper, lower)
+                .unwrap_or(self.left),
+            root: dock
+                .ratio_over(anchor, PaneKind::Inspector)
+                .unwrap_or(self.root),
+        }
+    }
+}
+
+/// The arrangement for a set of open panels, each in its place: the library
+/// and the monitor across the top, the timeline under them, and the
+/// inspector a column down the whole right side. Shutting one lets what is
+/// left take its room; the proportions are the ones the editor opens with.
+pub fn build_dock(panels: &Panels, ratios: &Ratios) -> Dock {
+    fn pair(columns: bool, ratio: f32, first: Option<Dock>, second: Option<Dock>) -> Option<Dock> {
+        match (first, second) {
+            (Some(first), Some(second)) => Some(Dock::Split {
+                columns,
+                ratio,
+                first: Box::new(first),
+                second: Box::new(second),
+            }),
+            (one, other) => one.or(other),
+        }
+    }
+    let leaf = |on: bool, kind| on.then_some(Dock::Leaf(kind));
+    let top = pair(
+        true,
+        ratios.top,
+        leaf(panels.media, PaneKind::Media),
+        leaf(panels.preview, PaneKind::Preview),
+    );
+    // The keys are a tab of the timeline when it is open and take its place
+    // when it is not, so shutting the timeline does not shut them.
+    let lower = if panels.timeline {
+        leaf(true, PaneKind::Timeline)
+    } else {
+        leaf(panels.keyframes, PaneKind::Keyframes)
+    };
+    let left = pair(false, ratios.left, top, lower);
+    pair(
+        true,
+        ratios.root,
+        left,
+        leaf(panels.inspector, PaneKind::Inspector),
+    )
+    .unwrap_or(Dock::Leaf(PaneKind::Preview))
+}
+
 /// The dock a narrow window shows: the monitor over the timeline, and
 /// nothing beside either. The library and the inspector are a switch away
 /// on each seat - see `PaneSwitcher` - which on a phone is how they are
@@ -297,6 +498,7 @@ pub fn compact_dock() -> Dock {
     }
 }
 
+/// The top edge of a row, measured down the stack from the first lane.
 pub fn row_top(heights: &[f32], row: i32) -> f32 {
     heights.iter().take(row.max(0) as usize).sum()
 }

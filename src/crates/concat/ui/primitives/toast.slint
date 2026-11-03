@@ -22,6 +22,9 @@ export struct ToastData {
     /// Failed notices are red and hold long enough to actually be read;
     /// confirmations only need a glance.
     failed: bool,
+    /// Centred under the title strip rather than in the corner: for a
+    /// verb whose result is on the timeline in the middle of the window.
+    top: bool,
 }
 
 export component ToastLayer inherits Rectangle {
@@ -84,8 +87,10 @@ export component ToastLayer inherits Rectangle {
     Rectangle {
         // 16px off both edges. The 12px it is pushed down by when it is away
         // is the rise.
-        x: root.width - self.width - 16px;
-        y: root.height - self.height - 16px + (root.shown ? 0px : 12px);
+        x: root.data.top ? (root.width - self.width) / 2 : root.width - self.width - 16px;
+        y: root.data.top
+            ? 48px - (root.shown ? 0px : 12px)
+            : root.height - self.height - 16px + (root.shown ? 0px : 12px);
         // Capped, then the label elides: a notice is a sentence, and one long
         // enough to reach across the window has stopped being one. A failure
         // keeps room for its copy chip.

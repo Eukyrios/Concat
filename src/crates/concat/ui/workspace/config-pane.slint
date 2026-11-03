@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Jareer Abdullah and Concat contributors
 
+import { ShapePanel } from "../inspector/shape-panel.slint";
+import { ProjectSheetData } from "../dialogs/project.slint";
+import { NumberField } from "../primitives/number-field.slint";
 import { I18n } from "../i18n.slint";
 import { Theme, SegmentedControl } from "../primitives/primitives.slint";
 import { SectionTabs } from "../primitives/section-tabs.slint";
@@ -10,7 +13,8 @@ import { Pane, PaneBody, PaneScroll } from "pane.slint";
 import { PaneKind, PaneSwitcher } from "pane-switcher.slint";
 import { EffectData } from "../demo/effects-panel.slint";
 import {
-    AdjustPanel, AppliedEntryData, AppliedParamData, AudioPanel, BackgroundRows, ProcessorRows,
+    AdjustPanel, AppliedEntryData, AppliedParamData, AudioPanel, BackgroundRows, BackgroundSection,
+    ProcessorRows,
     TransitionChoiceData,
     CatalogueEntryData, ColourKnobData, EnhancePanel, FilterPanel, PresetStack, SpeedPanel,
     TransitionPanel, VideoPanel,
@@ -31,6 +35,90 @@ import {
 //   Text alone for a title, or the layer panel for a filter on the lanes.
 // - A transition selected on its own: its panel, and nothing of the clips
 //   either side of it.
+
+// One thing that can be changed here: muted label left, its control right.
+component EditRow inherits HorizontalLayout {
+    in property <string> label;
+
+    padding-left: Theme.pad;
+    padding-right: Theme.pad;
+    padding-top: 2px;
+    padding-bottom: 2px;
+    spacing: 12px;
+    min-height: 30px;
+
+    Text {
+        text: root.label;
+        color: Theme.fg-muted;
+        font-size: Theme.fs;
+        vertical-alignment: center;
+    }
+
+    Rectangle { horizontal-stretch: 1; }
+
+    VerticalLayout {
+        alignment: center;
+        horizontal-stretch: 0;
+        @children
+    }
+}
+
+// A name typed in place: taken when Enter is pressed or the field is left,
+// not on every keystroke, so one rename is one edit.
+component NameBox inherits Rectangle {
+    in property <string> value;
+    in property <string> placeholder;
+
+    callback committed(text: string);
+
+    property <string> draft;
+    function seed() { root.draft = root.value; }
+    function commit() {
+        if (root.draft != root.value) {
+            root.committed(root.draft);
+        }
+    }
+    init => { root.seed(); }
+    changed value => {
+        if (!input.has-focus) {
+            root.seed();
+        }
+    }
+
+    width: 200px;
+    height: 26px;
+    border-radius: Theme.r-sm;
+    background: input.has-focus ? Theme.field-hover : hover.has-hover ? Theme.field-hover : Theme.field;
+    border-width: 1px;
+    border-color: input.has-focus ? Theme.accent : Colors.transparent;
+    clip: true;
+
+    hover := TouchArea {
+        mouse-cursor: MouseCursor.text;
+        clicked => { input.focus(); }
+    }
+
+    input := TextInput {
+        x: 8px;
+        y: (parent.height - self.height) / 2;
+        width: parent.width - 16px;
+        height: self.preferred-height;
+        text <=> root.draft;
+        color: Theme.fg;
+        font-size: Theme.fs;
+        horizontal-alignment: right;
+        single-line: true;
+        selection-background-color: Theme.accent;
+        selection-foreground-color: Theme.on-accent;
+
+        accepted => { root.commit(); }
+        changed has-focus => {
+            if (!self.has-focus) {
+                root.commit();
+            }
+        }
+    }
+}
 
 // One fact: muted label left, value right. The value wraps rather than
 // elides — a folder path you cannot read is a path you have to go find.
@@ -128,6 +216,17 @@ export component ConfigPane inherits Rectangle {
     in property <string> project-output: "1080 x 1920";
     in property <string> project-rate: "30.00 fps";
     in property <string> project-duration: "00:00:00:00";
+    /// What shows where no picture covers the frame; edited here directly.
+    in property <color> project-canvas: #000000;
+    callback canvas-changed(value: color);
+    /// The frame, rate and colour space as the controls below show them.
+    in property <ProjectSheetData> project-live;
+    /// A change made here; see Editor.project-edit.
+    callback project-edit(kind: int, value: float, text: string);
+    /// The custom frame and rate fields are open: asked for by picking
+    /// Custom, since a project whose numbers match a row reads as that row.
+    property <bool> custom-frame;
+    property <bool> custom-rate;
     in property <int> count-media;
     in property <int> count-tracks;
     in property <int> count-clips;
@@ -483,17 +582,119 @@ export component ConfigPane inherits Rectangle {
                     spacing: 0px;
 
                     FactHeading { title: I18n.t("configPane.project"); }
-                    FactRow { label: I18n.t("common.name"); value: root.project-name; }
+                    EditRow {
+                        label: I18n.t("common.name");
+                        NameBox {
+                            value: root.project-name;
+                            placeholder: I18n.t("common.untitledProject");
+                            committed(text) => { root.project-edit(0, 0, text); }
+                        }
+                    }
                     FactRow { label: I18n.t("configPane.folder"); value: root.project-folder; }
 
                     // The frame is a timeline's, not the project's: two cuts
                     // of one edit can be two shapes, and these rows say which
                     // one they are describing.
                     FactHeading { title: I18n.t("configPane.timeline"); }
-                    FactRow { label: I18n.t("common.name"); value: root.timeline-name; }
-                    FactRow { label: I18n.t("common.frame"); value: root.project-output; }
-                    FactRow { label: I18n.t("common.rate"); value: root.project-rate; }
+                    EditRow {
+                        label: I18n.t("common.name");
+                        NameBox {
+                            value: root.timeline-name;
+                            committed(text) => { root.project-edit(7, 0, text); }
+                        }
+                    }
+                    EditRow {
+                        label: I18n.t("common.frame");
+                        Select {
+                            width: 150px;
+                            current: root.custom-frame ? 8 : root.project-live.size;
+                            options: ["1920 × 1080", "3840 × 2160", "1080 × 1920", "1080 × 1080",
+                                "1080 × 1350", "1080 × 1440", "1440 × 1080", "2560 × 1080",
+                                I18n.t("common.custom")];
+                            details: ["16:9", "16:9 4K", "9:16", "1:1", "4:5", "3:4", "4:3", "21:9", ""];
+                            changed(index) => {
+                                root.custom-frame = index == 8;
+                                root.project-edit(1, index, "");
+                            }
+                        }
+                    }
+                    if root.custom-frame || root.project-live.size == 8: EditRow {
+                        label: "";
+                        HorizontalLayout {
+                            spacing: 6px;
+                            NumberField {
+                                width: 74px;
+                                value: root.project-live.custom-width;
+                                minimum: 16;
+                                maximum: 8192;
+                                step: 2;
+                                unit: "W";
+                                changed(value) => { root.project-edit(3, value, ""); }
+                            }
+                            Text {
+                                text: "×";
+                                color: Theme.fg-dim;
+                                vertical-alignment: center;
+                            }
+                            NumberField {
+                                width: 74px;
+                                value: root.project-live.custom-height;
+                                minimum: 16;
+                                maximum: 8192;
+                                step: 2;
+                                unit: "H";
+                                changed(value) => { root.project-edit(4, value, ""); }
+                            }
+                        }
+                    }
+                    EditRow {
+                        label: I18n.t("common.rate");
+                        Select {
+                            width: 150px;
+                            current: root.custom-rate ? 11 : root.project-live.rate;
+                            options: ["10 fps", "20 fps", "23.976 fps", "24 fps", "25 fps",
+                                "29.97 fps", "30 fps", "48 fps", "50 fps", "59.94 fps", "60 fps",
+                                I18n.t("common.custom")];
+                            changed(index) => {
+                                root.custom-rate = index == 11;
+                                root.project-edit(2, index, "");
+                            }
+                        }
+                    }
+                    if root.custom-rate || root.project-live.rate == 11: EditRow {
+                        label: "";
+                        NumberField {
+                            width: 110px;
+                            value: root.project-live.custom-fps;
+                            minimum: 1;
+                            maximum: 240;
+                            step: 1;
+                            precision: 3;
+                            unit: "fps";
+                            changed(value) => { root.project-edit(5, value, ""); }
+                        }
+                    }
+                    EditRow {
+                        label: I18n.t("common.color");
+                        Select {
+                            width: 150px;
+                            current: root.project-live.color-space;
+                            options: ["SDR", "HDR (HLG)", "HDR (PQ)"];
+                            details: ["Rec. 709", "Rec. 2020", "Rec. 2020"];
+                            changed(index) => { root.project-edit(6, index, ""); }
+                        }
+                    }
                     FactRow { label: I18n.t("common.duration"); value: root.project-duration; }
+
+                    // The background, a section of its own: the colour that
+                    // fills the gaps and the space round a title, clear if
+                    // asked, or a blurred copy of the picture. Changed here,
+                    // live, with no sheet to open.
+                    FactHeading { title: I18n.t("start.background"); }
+                    BackgroundSection {
+                        canvas: root.project-canvas;
+                        canvas-changed(value) => { root.canvas-changed(value); }
+                    }
 
                     FactHeading { title: I18n.t("configPane.contents"); }
                     FactRow { label: I18n.t("common.media"); value: "\{root.count-media}"; }
@@ -735,6 +936,13 @@ export component ConfigPane inherits Rectangle {
                         cutout-painting(on) => { root.cutout-painting(on); }
                         cutout-subject(index) => { root.cutout-subject(index); }
                         cutout-clear => { root.cutout-clear(); }
+                    }
+
+                    if root.is-shape: ShapePanel {
+                        selected: root.selected;
+                        set(field, value) => { root.clip-set(field, value); }
+                        set-colour(field, value) => { root.clip-set-colour(field, value); }
+                        commit => { root.clip-commit(); }
                     }
 
                     if !root.is-image && !root.is-shape: SpeedPanel {
